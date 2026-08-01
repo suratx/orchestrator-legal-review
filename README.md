@@ -176,7 +176,8 @@ orchestrator-legal-review/
 └── student_{1..6}_*/
       ├── snippet.py             # where the guardrail sits in the graph
       ├── test_failure.py        # reproduction: the failure, unguarded
-      └── METRICS.md             # before/after numbers
+      ├── METRICS.md             # before/after numbers
+      └── demo.mp4               # 2-minute failure/guardrail demonstration
 ```
 
 ---
