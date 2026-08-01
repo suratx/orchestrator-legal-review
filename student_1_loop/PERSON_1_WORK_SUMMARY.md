@@ -60,11 +60,19 @@ A ~150-word, quantified narrative in `INTERVIEW_STORIES.md` describing
 the failure mode, the fix, and the before/after metrics.
 
 **8. Repo scaffolding for the rest of the team**
-Created `student_2_silent/`, `student_3_rogue/`, `student_4_cascade/`,
-`student_5_trace/`, `student_6_tokens/` with placeholder docs describing
-each owner's node, failure mode, and required deliverables, plus draft
-`README.md` and `DESIGN_DOCS.md` (19-risk analysis: 6 selected
-guardrails + 13 additional risks considered, with status/rationale).
+Reserved `student_2_silent/`, `student_3_rogue/`, `student_4_cascade/`,
+`student_5_trace/`, `student_6_tokens/` as empty folders (tracked via
+`.gitkeep`) so each owner has a clean spot to push their own
+`snippet.py` / `test_failure.py` into without merge noise. Also drafted
+the team-level docs: `README.md` (domain, stack, setup, ownership
+matrix, repo structure), `DESIGN_DOCS.md` (19-risk analysis — 6
+selected guardrails + 13 additional risks considered, with
+status/rationale), and `INTERVIEW_STORIES.md` (combined file with
+Person 1's entry filled in and TODO placeholders for Person 2–5).
+
+**9. Repository published**
+Pushed the full repository to GitHub as a public repo:
+https://github.com/suratx/orchestrator-legal-review
 
 ## Verification
 
@@ -76,6 +84,10 @@ failure-mode repro tests + 2 integration tests).
 - Contract freeze (Person 2)
 - Analyzer, Actor, Validator real implementations (Person 2/3/4)
 - LangSmith redaction + context manager (Person 5)
-- Remaining 5 failure-mode folders' code, metrics, and videos
+- Remaining 5 failure-mode folders' code, metrics, and videos (folders
+  are empty and ready to receive them)
+- Adding Person 2–5 as GitHub collaborators (repo is public and
+  readable by anyone now; direct push access still needs explicit
+  invites)
 - Person 1's own 2-minute failure/success demo video (recording, not code)
 - Team's combined 5-minute end-to-end demo video
