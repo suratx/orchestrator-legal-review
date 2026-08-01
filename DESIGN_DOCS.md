@@ -17,7 +17,7 @@ their own node and fill in any owner-specific detail marked TODO.
 | # | Failure Risk | Node / Layer | Owner | Guardrail Summary |
 |---|---|---|---|---|
 | 1 | Infinite Graph Loops | Coordinator | Person 1 | `round_number >= 5` hard ceiling in the conditional-edge function → short-circuit to `partial_output`. See `student_1_loop/`. |
-| 2 | Silent Hallucination | Analyzer | Person 2 | `.with_structured_output()` + programmatic schema validation + one automated self-correction retry. See `student_2_silent/`. TODO (Person 2). |
+| 2 | Silent Hallucination | Analyzer | Person 2 | Three code layers: (a) `.with_structured_output(ContractAnalysis)` forces the model through a Pydantic schema; (b) `contract.validate_grounded()` re-validates against the source text — every `verbatim_quote`, `clause_id` and `counterparty` must occur in `raw_input`, and `overall_risk` must equal the worst clause risk; (c) on either failure the validator's exact message is fed back for exactly one in-node self-correction (`MAX_ANALYZER_RETRIES = 1`), then the node sets `rejection_flag` rather than guess. Layer (b) is the load-bearing one: structural validation *cannot* catch a hallucination, because a hallucination is structurally valid by construction. See `student_2_silent/METRICS.md`. |
 | 3 | Rogue Tool Execution | Actor | Person 3 | Tool-call interception against a hardcoded permission matrix; raises `InvalidToolCallException`, no retry. See `student_3_rogue/`. TODO (Person 3). |
 | 4 | Downstream Cascade Failure | Validator | Person 4 | Explicit sanitization node with programmatic assertions; sets `rejection_flag` and forces rollback. See `student_4_cascade/`. TODO (Person 4). |
 | 5 | Data Privacy Leak (Tracing) | Global — Tracing | Person 5 | Redaction interceptor scrubs PII/secrets from payload metadata before LangSmith export. See `student_5_trace/`. TODO (Person 5). |
@@ -35,7 +35,7 @@ issues.
 |---|---|---|---|
 | 7 | Coordinator routes to a dead/unregistered node name | Coordinator → conditional edges | Mitigated: `next_route` is constrained to the four `ROUTE_*` constants in `contract.py`; LangGraph raises at graph-build time on an unmapped key. |
 | 8 | Duplicate/out-of-order state writes from concurrent branches | Actor / Validator | Deferred — graph is currently strictly sequential (no fan-out), so not reachable in v1. Revisit if parallel workers are added. |
-| 9 | Analyzer returns valid schema but empty `analysis_payload` | Analyzer | Partially covered by guardrail #2 (schema validation catches missing required fields); TODO (Person 2) confirm `ClauseRisk` model marks clause list as non-empty. |
+| 9 | Analyzer returns valid schema but empty `analysis_payload` | Analyzer | **Confirmed closed (Person 2).** `ContractAnalysis.clauses` is declared `Field(min_length=1)`, so a zero-clause analysis fails at parse time. `ClauseRisk` has no default on any field — a default would let the model omit a critical identifier and still produce a "valid" object, which is the failure mode itself. `verbatim_quote` and `risk_rationale` also carry `min_length` on the *Field* (not only in a validator) so the constraint is exported into the JSON Schema that Ollama's decoder constrains generation against; live runs showed llama3.2 emitting empty `risk_rationale` strings until this was added. Note the deliberate remaining gap: an empty payload is also written on purpose when the Analyzer rejects (`analysis_payload = {}` alongside `rejection_flag = True`) — downstream nodes must key off `is_validated`, not payload emptiness. |
 | 10 | Actor calls a real (non-mocked) destructive tool by misconfiguration | Actor | Covered by Person 3's final safety review requirement — all domain tools must be verified mocked before integration. |
 | 11 | Validator approves output that violates a business invariant not yet encoded | Validator | Deferred — invariant list is TODO (Person 4) to finalize; only structural checks are guaranteed in v1. |
 | 12 | LangSmith outage blocks the whole graph on tracing calls | Global — Tracing | Deferred — assumed tracing calls are fire-and-forget / non-blocking; TODO (Person 5) confirm SDK behavior on network failure. |
@@ -51,5 +51,19 @@ issues.
 
 - Item 18 (Reporter has no guardrail) — worth a small addition before
   final integration, or accepted as out of scope?
-- Items 9, 11, 12, 14 need each respective owner to confirm status once
-  their node is implemented.
+- Items 11, 12, 14 need each respective owner to confirm status once their
+  node is implemented. Item 9 is closed — see the row above.
+- **New risk surfaced during implementation (Person 2):** the loop guardrail
+  (#1) does not fire when a node fails *without* setting `rejection_flag` —
+  `round_number` is incremented only inside the `rejection_flag` branch of the
+  Coordinator, so an `is_validated=False` failure re-routes to the Analyzer
+  forever with `round_number` stuck at 0. Reproduced against the real
+  Coordinator; write-up and one-line fix in `CONTRACT_FREEZE_NOTES.md` §5.
+  Person 1 to decide. Related to item 16 — both are cases where the round
+  ceiling is the assumed backstop but does not actually engage.
+- **Grounding false positives (Person 2):** an anti-hallucination check that
+  cries wolf gets switched off, so it is a real risk, not a cosmetic one.
+  Live llama3.2 output substitutes typographic apostrophes and stray JSON
+  escapes into otherwise-faithful quotes; `contract.normalize_text()` folds
+  these to ASCII before comparison. Measured: 4/10 grounding rejections before
+  the fix (≥2 typographic), 0/12 after, with genuine defects still caught.

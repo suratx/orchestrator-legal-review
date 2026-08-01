@@ -32,12 +32,23 @@ rate instead of an unbounded runaway.
 **Role:** Contract & Analyzer (Worker A)
 **System:** Multi-agent legal contract review orchestrator (LangGraph, Python)
 
-TODO (Person 2): describe the silent-hallucination failure you reproduced
-in `student_2_silent/test_failure.py` (what did the unguarded Analyzer
-output look like — structurally valid but wrong how?), the
-`.with_structured_output()` + validation + one-shot self-correction
-guardrail you built, and the quantified before/after metric (e.g. "N
-malformed/incomplete clause extractions per 100 runs → 0").
+Building Worker A of a five-node LangGraph contract-review orchestrator, I hit
+the failure mode that doesn't announce itself. The Analyzer returned an
+analysis with correct types, valid enums and well-formed section numbers — and
+a twelve-month liability cap that was not in the contract, while omitting the
+uncapped indemnity that was. `.with_structured_output()` accepted it without a
+murmur, because a hallucination is structurally valid by construction.
+
+So I moved the domain invariants into the frozen Pydantic contract itself:
+every verbatim quote, clause ID and party name must occur in the source text,
+and overall risk must equal the worst clause risk. On failure the node feeds
+the validator's exact message back for exactly one automated self-correction,
+then rejects to the Coordinator rather than guess.
+
+Across a 12-analysis benchmark, defective analyses reaching the next agent fell
+from 8/12 to 0/12 — zero correct analyses wrongly rejected — at a cost of one
+extra model call. Live llama3.2 runs showed an 8.3% silent-failure rate the
+schema alone could not see.
 
 ---
 

@@ -1,87 +1,189 @@
 # Orchestrator — Legal Contract Review
 
-A multi-agent LangGraph orchestrator that reviews legal contracts (clause
-extraction → risk analysis → redline generation → counter-party
-verification), built around a central Coordinator that dynamically routes
-execution and enforces six code-level failure guardrails.
+A multi-agent [LangGraph](https://langchain-ai.github.io/langgraph/) system
+that reviews legal contracts end to end — **clause extraction → risk analysis
+→ redline generation → counter-party verification** — built around a central
+Coordinator that routes dynamically and six **code-level** guardrails that stop
+the six critical multi-agent failure modes.
 
-## Domain
+Every guardrail here is a plain Python `if` on a state field, not a line of
+prompt text. An LLM can be talked out of an instruction; it cannot be talked
+out of a `ValidationError`.
 
-Legal Contract Review. Input: raw contract text. Output: a structured
-review report (extracted clauses, risk tags, proposed redlines,
-validation notes) or, if a guardrail trips, a partial/manual-review
-report.
+---
+
+## The domain, and why it was chosen
+
+Legal contract review is high-stakes in a way that makes each failure mode
+concrete rather than academic:
+
+| Failure mode | What it costs in this domain |
+|---|---|
+| Infinite loop | Budget drains while a contract sits unreviewed |
+| **Silent hallucination** | A liability cap that doesn't exist is reported as real, and someone signs |
+| Rogue tool execution | An unreviewed redline is written into a live document |
+| Cascade failure | A malformed redline crashes verification, or worse, passes it |
+| Privacy leak | Client names and deal terms land in a cloud telemetry dashboard |
+| Context explosion | Long contracts blow the window and latency with it |
+
+**Input:** raw contract text. **Output:** a structured review report — extracted
+clauses, risk tags, proposed redlines, validation notes — or, if any guardrail
+trips, a `PARTIAL — MANUAL REVIEW REQUIRED` report. The system is designed to
+fail loudly and stop, never to fail quietly and continue.
+
+---
+
+## Architecture
+
+```
+                  ┌──────────────────────────────┐
+                  ▼                              │ (Loop / Self-Correction)
+               [ 0. Coordinator Node ] ──────────┼──────────────┐
+                  │              ▲               │              │
+                  │ (Route A)    │ (Error Flag)  │ (Route B)    │ (Route C)
+                  ▼              │               ▼              ▼
+     [ 1. Worker A: Analyzer ] ──┘     [ 2. Worker B: Actor ]   [ 4. Worker D: Reporter ]
+                  │                              │
+                  │ (Valid Schema)               │ (Execution State)
+                  ▼                              ▼
+     [ 5. Worker C: Validator ] ◄────────────────┘
+```
+
+Not a linear pipeline: every worker returns control to the Coordinator, which
+reads state flags and decides whether to go forward, roll back, or stop. That
+single choke point is what makes a deterministic loop guardrail possible.
+
+Full topology, node interfaces and routing/retry/rollback rules:
+[`ARCHITECTURE_DESIGN.md`](ARCHITECTURE_DESIGN.md).
+
+---
 
 ## Stack
 
-- **Language:** Python (single-language repo — no TypeScript, per the
-  zero-tolerance multi-language rule)
-- **Framework:** LangGraph + LangChain Core
-- **Schema:** Pydantic
-- **Observability:** LangSmith
-- **Testing:** pytest
+| | |
+|---|---|
+| Language | Python 3.11 — **single-language repo**, per the zero-tolerance rule |
+| Framework | LangGraph + LangChain Core |
+| Schema | Pydantic v2 (the frozen contract) |
+| LLM | Local **Ollama / llama3.2** — free, offline, no API key to leak |
+| Observability | LangSmith (with a redaction interceptor in front of it) |
+| Testing | pytest |
+
+The LLM is local by design: it keeps the whole team able to run the system
+without sharing an API key, and it makes the privacy guardrail (Person 5) a
+real exercise rather than a hypothetical one.
+
+---
 
 ## Setup
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install langgraph langchain-core pydantic langsmith pytest
+conda create -n orchestrator-legal python=3.11 -y
+conda activate orchestrator-legal
+pip install -r requirements.txt
 ```
 
-Run the integrated graph:
+For anything that calls the model (the Analyzer, the integrated graph, the
+live benchmark), you also need Ollama running:
 
 ```bash
+ollama pull llama3.2
+ollama serve
+```
+
+Optional environment variables (sensible defaults are built in):
+
+| Variable | Default |
+|---|---|
+| `OLLAMA_MODEL` | `llama3.2` |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` |
+
+**The test suite never touches the network.** Every test injects a scripted
+model, so `pytest` passes with Ollama stopped.
+
+---
+
+## Running it
+
+```bash
+# The integrated graph, end to end
 python main_system.py
+
+# Everything
+pytest -v                                  # 31 tests
+
+# One person's failure-mode reproduction + metrics table
+python student_1_loop/test_failure.py      # infinite loop
+python student_2_silent/test_failure.py    # silent hallucination
+
+# Live measurement against the real model (needs ollama serve)
+python student_2_silent/benchmark_live.py --runs 12
 ```
 
-Run the full test suite:
+---
 
-```bash
-pytest -v
+## Team & ownership
+
+Five people, six failure modes — Person 5 owns two.
+
+| # | Owner | Node / Layer | Failure mode | Guardrail | Folder |
+|---|---|---|---|---|---|
+| 1 | Person 1 | Coordinator | Infinite graph loops | `round_number >= 5` → short-circuit to partial output | [`student_1_loop/`](student_1_loop/) |
+| 2 | Person 2 | Worker A — Analyzer | **Silent hallucination** | `.with_structured_output()` + source-grounding invariants + 1 retry | [`student_2_silent/`](student_2_silent/) |
+| 3 | Person 3 | Worker B — Actor | Rogue tool execution | Permission matrix + `InvalidToolCallException` | [`student_3_rogue/`](student_3_rogue/) |
+| 4 | Person 4 | Worker C — Validator | Downstream cascade failure | Sanitization node + rejection flag + rollback | [`student_4_cascade/`](student_4_cascade/) |
+| 5 | Person 5 | Global — Tracing | Data privacy leak | Redaction interceptor before LangSmith export | [`student_5_trace/`](student_5_trace/) |
+| 6 | Person 5 | Global — Context | Context window explosion | Token-threshold summarization + pruning | [`student_6_tokens/`](student_6_tokens/) |
+
+Person 1 also owns the architecture, the Reporter node, and integration into
+`main_system.py`. Person 2 owns `contract.py` and this README. Person 3 leads
+the final safety review. Person 4 leads end-to-end testing.
+
+---
+
+## The contract
+
+[`contract.py`](contract.py) is the mandatory shared state schema — one
+Pydantic `AgentState` that every node reads from and writes to. It sets
+`extra="forbid"`, so a node that tries to smuggle in an undeclared field fails
+loudly instead of silently corrupting downstream workers.
+
+**Status: v1.0.0, proposed for freeze.** The review record — what changed from
+Person 1's draft, the two open questions resolved, one design disagreement, and
+an integration bug found along the way — is in
+[`CONTRACT_FREEZE_NOTES.md`](CONTRACT_FREEZE_NOTES.md). Persons 1, 3, 4 and 5
+should read §7 there and claim any fields they need **before** we freeze.
+
+Beyond the state model, the contract also carries the domain invariants
+(`ClauseRisk`, `ContractAnalysis`, `validate_grounded()`) — because "is this
+analysis trustworthy?" is shared law, not one node's private opinion.
+
+---
+
+## Repository structure
+
+```
+orchestrator-legal-review/
+├── README.md                    # this file
+├── ARCHITECTURE_DESIGN.md       # topology, interfaces, routing rules
+├── CONTRACT_FREEZE_NOTES.md     # freeze review record
+├── DESIGN_DOCS.md               # 19 alternative failure risks considered
+├── INTERVIEW_STORIES.md         # six ~150-word interview narratives
+├── contract.py                  # THE FROZEN CONTRACT
+├── main_system.py               # the integrated graph, all guardrails active
+├── requirements.txt
+├── test_main_system.py
+└── student_{1..6}_*/
+      ├── snippet.py             # where the guardrail sits in the graph
+      ├── test_failure.py        # reproduction: the failure, unguarded
+      └── METRICS.md             # before/after numbers
 ```
 
-## Team & Ownership
+---
 
-| # | Owner | Node / Layer | Critical failure mode | Folder |
-|---|-------|---------------|------------------------|--------|
-| 1 | Person 1 | Coordinator (Orchestrator) | Infinite Graph Loops | `student_1_loop/` |
-| 2 | Person 2 | Worker A (Analyzer) | Silent Hallucination | `student_2_silent/` |
-| 3 | Person 3 | Worker B (Actor) | Rogue Tool Execution | `student_3_rogue/` |
-| 4 | Person 4 | Worker C (Validator) | Downstream Cascade Failure | `student_4_cascade/` |
-| 5 | Person 5 | Global — Tracing & Privacy | Data Privacy Leak (Tracing) | `student_5_trace/` |
-| 5 | Person 5 | Global — Context/Token Manager | Context Window Explosion | `student_6_tokens/` |
+## Safety
 
-Person 1 also owns overall architecture (`ARCHITECTURE_DESIGN.docx`), the
-Reporter node, and integration of all six guardrails into
-`main_system.py`. Person 2 also owns `contract.py` (formalized from the
-team-approved state design) once frozen. Person 4 leads unit,
-integration, failure-mode, rollback, and end-to-end testing after
-integration lands.
-
-## Repository Structure
-
-See `ARCHITECTURE_DESIGN.docx` Section 7 for the full layout. Top level:
-
-```
-/orchestrator-legal-review/
-  README.md
-  DESIGN_DOCS.md
-  INTERVIEW_STORIES.md
-  contract.py
-  main_system.py
-  student_1_loop/ .. student_6_tokens/
-```
-
-## Contract Freeze
-
-`contract.py` is the mandatory shared state schema. It is currently a
-**draft** (`AgentState`, see file header) built from
-`ARCHITECTURE_DESIGN.docx` Section 6. No guardrail node may add fields
-outside this contract without a team-wide review. Status: **not yet
-frozen** — pending Person 2 review and commit.
-
-## Status
-
-Work in progress. See `ARCHITECTURE_DESIGN.docx` Section 8 ("Next Steps")
-for the current stage of the team workflow.
+Per the assignment's safety mandate, **every action touching external
+infrastructure is mocked**. No file writes outside this repo, no deletions, no
+network calls to anything but the local Ollama server — including inside the
+deliberately-broken reproduction scripts. Person 3 owns the final audit.

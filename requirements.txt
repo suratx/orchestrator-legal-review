@@ -1,0 +1,10 @@
+# Orchestrator - Legal Contract Review
+# Single-language repo: Python only (zero-tolerance multi-language rule).
+# Install:  pip install -r requirements.txt
+
+langgraph>=0.2
+langchain-core>=0.3
+langchain-ollama>=1.0     # local LLM backend for Worker A (Analyzer)
+pydantic>=2.7             # the frozen contract
+langsmith>=0.1            # tracing (Person 5)
+pytest>=8.0

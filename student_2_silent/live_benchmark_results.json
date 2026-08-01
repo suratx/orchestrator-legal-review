@@ -1,0 +1,142 @@
+{
+  "summary": {
+    "runs": 12,
+    "model": "llama3.2",
+    "temperature": 0.7,
+    "unguarded_verdicts": {
+      "CLEAN": 9,
+      "STRUCTURAL_FAIL": 2,
+      "SILENT_FAIL": 1
+    },
+    "structure_only_accepted": 10,
+    "structure_only_silent_defects": 1,
+    "guarded_accepted": 12,
+    "guarded_repaired_on_retry": 0,
+    "guarded_rejected": 0,
+    "guarded_silent_defects": 0,
+    "median_call_seconds": 19.09,
+    "median_guarded_seconds": 20.82
+  },
+  "records": [
+    {
+      "run": 1,
+      "unguarded_verdict": "CLEAN",
+      "unguarded_reason": "",
+      "unguarded_seconds": 34.99,
+      "guarded_accepted": true,
+      "guarded_retries": 0,
+      "guarded_seconds": 45.37,
+      "guarded_error": ""
+    },
+    {
+      "run": 2,
+      "unguarded_verdict": "STRUCTURAL_FAIL",
+      "unguarded_reason": "OutputParserException: Failed to parse ContractAnalysis from completion {\"contract_title\": \"MASTER SERVICES AGREEMENT\", \"counterparty\": \"Globex Industries Ltd\", \"clauses\": [{\"clause_id\": \"Section 4.2\", \"clause_type\": \"indemnification\", \"verbatim_quote\": \"Supplier shall indemnify, defend and hold har",
+      "unguarded_seconds": 47.54,
+      "guarded_accepted": true,
+      "guarded_retries": 0,
+      "guarded_seconds": 28.85,
+      "guarded_error": ""
+    },
+    {
+      "run": 3,
+      "unguarded_verdict": "CLEAN",
+      "unguarded_reason": "",
+      "unguarded_seconds": 22.69,
+      "guarded_accepted": true,
+      "guarded_retries": 0,
+      "guarded_seconds": 21.52,
+      "guarded_error": ""
+    },
+    {
+      "run": 4,
+      "unguarded_verdict": "CLEAN",
+      "unguarded_reason": "",
+      "unguarded_seconds": 20.96,
+      "guarded_accepted": true,
+      "guarded_retries": 0,
+      "guarded_seconds": 13.85,
+      "guarded_error": ""
+    },
+    {
+      "run": 5,
+      "unguarded_verdict": "CLEAN",
+      "unguarded_reason": "",
+      "unguarded_seconds": 5.33,
+      "guarded_accepted": true,
+      "guarded_retries": 0,
+      "guarded_seconds": 19.41,
+      "guarded_error": ""
+    },
+    {
+      "run": 6,
+      "unguarded_verdict": "SILENT_FAIL",
+      "unguarded_reason": "<root>: Value error, UNGROUNDED OUTPUT (hallucination detected): clause_id 'Section 7.1' refers to 'Section 7.1', which does not exist in the source contract.; clause_id 'Section 9.1' refers to 'Section 9.1', which does not exist in the source contract.; clause_id 'Section 11.1' refers to 'Section 1",
+      "unguarded_seconds": 18.9,
+      "guarded_accepted": true,
+      "guarded_retries": 0,
+      "guarded_seconds": 39.67,
+      "guarded_error": ""
+    },
+    {
+      "run": 7,
+      "unguarded_verdict": "CLEAN",
+      "unguarded_reason": "",
+      "unguarded_seconds": 18.88,
+      "guarded_accepted": true,
+      "guarded_retries": 0,
+      "guarded_seconds": 24.14,
+      "guarded_error": ""
+    },
+    {
+      "run": 8,
+      "unguarded_verdict": "CLEAN",
+      "unguarded_reason": "",
+      "unguarded_seconds": 9.39,
+      "guarded_accepted": true,
+      "guarded_retries": 0,
+      "guarded_seconds": 21.3,
+      "guarded_error": ""
+    },
+    {
+      "run": 9,
+      "unguarded_verdict": "CLEAN",
+      "unguarded_reason": "",
+      "unguarded_seconds": 21.23,
+      "guarded_accepted": true,
+      "guarded_retries": 0,
+      "guarded_seconds": 20.34,
+      "guarded_error": ""
+    },
+    {
+      "run": 10,
+      "unguarded_verdict": "CLEAN",
+      "unguarded_reason": "",
+      "unguarded_seconds": 19.29,
+      "guarded_accepted": true,
+      "guarded_retries": 0,
+      "guarded_seconds": 8.63,
+      "guarded_error": ""
+    },
+    {
+      "run": 11,
+      "unguarded_verdict": "STRUCTURAL_FAIL",
+      "unguarded_reason": "OutputParserException: Failed to parse ContractAnalysis from completion {\"contract_title\": \"MASTER SERVICES AGREEMENT\", \"counterparty\": \"Globex Industries Ltd\", \"clauses\": [{\"clause_id\": \"Section 4.2\", \"clause_type\": \"indemnification\", \"verbatim_quote\": \"Supplier shall indemnify, defend and hold har",
+      "unguarded_seconds": 17.44,
+      "guarded_accepted": true,
+      "guarded_retries": 0,
+      "guarded_seconds": 17.32,
+      "guarded_error": ""
+    },
+    {
+      "run": 12,
+      "unguarded_verdict": "CLEAN",
+      "unguarded_reason": "",
+      "unguarded_seconds": 17.19,
+      "guarded_accepted": true,
+      "guarded_retries": 0,
+      "guarded_seconds": 17.05,
+      "guarded_error": ""
+    }
+  ]
+}
