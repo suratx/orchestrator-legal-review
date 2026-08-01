@@ -66,11 +66,28 @@ def coordinator_node(state: AgentState) -> AgentState:
 
     # --- 2. Normal routing decisions (unchanged by the guardrail) ---
     if state.rejection_flag:
+        # ARCHITECTURE_DESIGN.md §5.3 — identical rejection reason twice in a
+        # row means the graph is stuck on a deterministically unfixable
+        # error. Escalate to partial_output instead of burning rounds.
+        # Person 4's Validator (and any rejecting node) appends
+        # "<node>: <reason>" to rejection_reason_history before returning.
+        history = state.rejection_reason_history
+        if len(history) >= 2 and history[-1] == history[-2]:
+            logger.warning(
+                "repeated rejection reason %r -> forcing partial_output",
+                history[-1],
+            )
+            state.rejection_flag = False
+            state.next_route = ROUTE_PARTIAL_OUTPUT
+            state.error_log = state.error_log or history[-1]
+            return state
+
         # Validator rejected -> go back to Analyzer, not Actor, per
         # ARCHITECTURE_DESIGN.md 5.3 (avoid re-running a redline against
         # clauses that may themselves need re-extraction).
         state.round_number += 1
         state.rejection_flag = False  # consumed; Analyzer will re-validate
+        state.error_log = state.error_log or state.validation_notes
         state.next_route = ROUTE_ANALYZER
         return state
 

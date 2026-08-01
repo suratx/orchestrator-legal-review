@@ -1,15 +1,16 @@
 """
-main_system.py — Person 1 integration scaffold (WORK IN PROGRESS)
+main_system.py — Unified Legal Contract Review Orchestrator
 
-This is the skeleton Person 1 owns: it wires the Coordinator (with the
-round_number loop guardrail) and a Reporter node into a real LangGraph
-StateGraph, using stub Analyzer/Actor/Validator nodes as placeholders until
-Person 2/3/4 land their real implementations behind the same contract.py
-interfaces.
+Person 1 owns graph assembly and the Reporter. Worker nodes are imported from
+each student's guardrail module behind the frozen contract.py interfaces
+(AgentState -> AgentState). Stubs remain available for offline scaffolding
+tests via build_graph(...).
 
-Nothing here is final -- once Person 2 freezes contract.py and the other
-students' guardrails are ready, their real nodes replace the stubs below
-1:1 (same function signature: AgentState -> AgentState).
+Active guardrails wired here:
+  - Person 1: Coordinator round_number ceiling + repeated-rejection escalate
+  - Person 2: Analyzer (optional; requires Ollama — default stub for CI)
+  - Person 3: Actor tool-permission middleware
+  - Person 4: Validator sanitization + rejection_flag rollback
 """
 
 from __future__ import annotations
@@ -24,32 +25,72 @@ from contract import (
     AgentState,
 )
 from student_1_loop.snippet import coordinator_node, route_after_coordinator
+from student_3_rogue.snippet import actor_node
+from student_4_cascade.snippet import validator_node
 
 # --------------------------------------------------------------------------
-# STUB WORKER NODES (placeholders -- to be replaced by Person 2/3/4)
+# STUB WORKER NODES (offline / CI placeholders)
 # --------------------------------------------------------------------------
 
 
 def analyzer_stub(state: AgentState) -> AgentState:
     """Stands in for Student 2's Clause Extractor + Risk Analyzer."""
     state = state.model_copy(deep=True)
-    state.analysis_payload = {"clauses": ["Indemnification", "Termination"], "risk": "medium"}
+    state.analysis_payload = {
+        "contract_title": "Sample NDA",
+        "counterparty": "Globex Industries Ltd",
+        "overall_risk": "critical",
+        "clauses": [
+            {
+                "clause_id": "Section 4.2 Indemnification",
+                "clause_type": "indemnification",
+                "verbatim_quote": (
+                    "Globex Industries Ltd shall indemnify Acme Corporation for "
+                    "all losses arising from breach, negligence, or misconduct "
+                    "without limitation."
+                ),
+                "risk_level": "critical",
+                "risk_rationale": (
+                    "The indemnity is uncapped and creates significant "
+                    "financial exposure for the client."
+                ),
+            }
+        ],
+    }
     state.is_validated = True
     return state
 
 
 def actor_stub(state: AgentState) -> AgentState:
-    """Stands in for Student 3's Redline Generator (tool-gated)."""
+    """Legacy stub — prefer student_3_rogue.snippet.actor_node in production."""
     state = state.model_copy(deep=True)
-    state.sanitized_tool_calls = ["propose_redline(clause='Indemnification')"]
-    state.execution_state = {"redlines_proposed": 1}
+    clause_id = "Section 4.2 Indemnification"
+    state.sanitized_tool_calls = [
+        f"propose_redline({{'clause_id': {clause_id!r}}})"
+    ]
+    state.execution_state = {
+        "status": "completed",
+        "executed_count": 1,
+        "results": [
+            {
+                "status": "mock_success",
+                "tool": "propose_redline",
+                "clause_id": clause_id,
+                "replacement_text": (
+                    "MOCK REDLINE: revise this clause to reduce the "
+                    "identified contractual risk."
+                ),
+                "reason": "uncapped indemnity",
+                "external_action_performed": False,
+            }
+        ],
+        "external_action_performed": False,
+    }
     return state
 
 
 def validator_stub(state: AgentState) -> AgentState:
-    """Stands in for Student 4's structural/counter-party validator.
-    Approves on the first pass in this scaffold; real version enforces
-    invariants and can set rejection_flag."""
+    """Legacy stub — prefer student_4_cascade.snippet.validator_node."""
     state = state.model_copy(deep=True)
     state.rejection_flag = False
     state.validation_notes = "stub: approved"
@@ -57,20 +98,24 @@ def validator_stub(state: AgentState) -> AgentState:
 
 
 def reporter_node(state: AgentState) -> AgentState:
-    """Person 1's scope. Emits either a full report or, if the loop
-    guardrail fired, a partial/manual-review report."""
+    """Person 1's scope. Emits either a full report or, if a guardrail
+    short-circuited to partial_output, a manual-review report."""
     state = state.model_copy(deep=True)
-    if state.next_route == ROUTE_PARTIAL_OUTPUT or state.error_log:
+    if state.next_route == ROUTE_PARTIAL_OUTPUT:
         state.final_report = (
             "PARTIAL -- MANUAL REVIEW REQUIRED\n"
             f"Reason: {state.error_log}\n"
             f"Rounds attempted: {state.round_number}"
         )
     else:
+        redlines = state.execution_state.get("redlines_proposed")
+        if redlines is None:
+            redlines = state.execution_state.get("executed_count")
+        clauses = state.analysis_payload.get("clauses", [])
         state.final_report = (
             "Contract Review Complete\n"
-            f"Clauses analyzed: {state.analysis_payload.get('clauses')}\n"
-            f"Redlines proposed: {state.execution_state.get('redlines_proposed')}\n"
+            f"Clauses analyzed: {len(clauses) if isinstance(clauses, list) else clauses}\n"
+            f"Redlines proposed: {redlines}\n"
             f"Validation: {state.validation_notes}"
         )
     return state
@@ -81,11 +126,18 @@ def reporter_node(state: AgentState) -> AgentState:
 # --------------------------------------------------------------------------
 
 
-def build_graph(*, analyzer=analyzer_stub, actor=actor_stub, validator=validator_stub):
+def build_graph(
+    *,
+    analyzer=analyzer_stub,
+    actor=actor_node,
+    validator=validator_node,
+):
     """Assembles the graph from injectable node callables so tests can swap
-    in adversarial stand-ins (e.g. an always-rejecting validator) without
-    duplicating the wiring. Defaults are the placeholder stubs used until
-    Person 2/3/4 land their real nodes."""
+    in adversarial stand-ins without duplicating the wiring.
+
+    Defaults wire Person 3's Actor and Person 4's Validator. Analyzer defaults
+    to the offline stub (Person 2's live node needs Ollama).
+    """
     graph = StateGraph(AgentState)
 
     graph.add_node("coordinator", coordinator_node)
@@ -117,6 +169,15 @@ def build_graph(*, analyzer=analyzer_stub, actor=actor_stub, validator=validator
 
 if __name__ == "__main__":
     app = build_graph()
-    initial_state = AgentState(raw_input="Sample NDA for counter-party review...")
+    initial_state = AgentState(
+        raw_input=(
+            "MASTER SERVICES AGREEMENT\n"
+            "Counterparty: Globex Industries Ltd\n\n"
+            "Section 4.2 Indemnification\n"
+            "Globex Industries Ltd shall indemnify Acme Corporation for all "
+            "losses arising from breach, negligence, or misconduct without "
+            "limitation."
+        )
+    )
     result = app.invoke(initial_state, config={"recursion_limit": 50})
     print(result["final_report"])
