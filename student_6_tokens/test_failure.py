@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from contract import MAX_ROUNDS
 from main_system import build_graph
 from student_6_tokens.fixtures import (
+    HistoryConsumingAnalyzer,
     actor_stub,
     analyzer_stub,
     initial_state,
@@ -193,6 +194,23 @@ def _fmt(n: int) -> str:
     return f"{n:,}"
 
 
+def _run_with_consumer(context_node) -> HistoryConsumingAnalyzer:
+    """Same run, but with an Analyzer that actually reads the window.
+
+    Its `prompt_tokens` are recorded at real consumer invocations, which is the
+    only figure here that is measured rather than projected.
+    """
+    analyzer = HistoryConsumingAnalyzer()
+    app = build_graph(
+        analyzer=analyzer,
+        actor=actor_stub,
+        validator=make_varying_validator(),
+        context_manager=context_node,
+    )
+    app.invoke(initial_state(), config={"recursion_limit": 60})
+    return analyzer
+
+
 def main() -> None:
     print("=" * 74)
     print("PERSON 5 (CONTEXT LAYER) -- CONTEXT WINDOW EXPLOSION & TOKEN BURN")
@@ -224,14 +242,35 @@ def main() -> None:
     print("   note: the turn COUNT is unchanged because stage 1 digests bulky")
     print("         tool outputs in place. The window shrinks, the list does not.")
 
-    saved = unguarded.cumulative - guarded.cumulative
-    pct = 100 * saved / unguarded.cumulative
+    # The defensible number: measured at an agent that genuinely reads the
+    # window, rather than assumed at every graph transition.
+    u_agent = _run_with_consumer(context_manager_NO_GUARDRAIL)
+    g_agent = _run_with_consumer(context_manager_node)
+
+    pct_proj = 100 * (unguarded.cumulative - guarded.cumulative) / unguarded.cumulative
+    pct_real = 100 * (u_agent.cumulative - g_agent.cumulative) / u_agent.cumulative
+    breaches_before = sum(w > MAX_CONTEXT_TOKENS for w in unguarded.windows)
+
     print("\n3. RESULT")
-    print(f"   peak window       : {_fmt(unguarded.peak)} -> {_fmt(guarded.peak)} tokens")
-    print(f"   cumulative burn   : {_fmt(unguarded.cumulative)} -> "
-          f"{_fmt(guarded.cumulative)} tokens  ({pct:.1f}% reduction)")
-    print(f"   graph output      : identical "
+    print(f"   peak window            : {_fmt(unguarded.peak)} -> "
+          f"{_fmt(guarded.peak)} tokens  "
+          f"({100 * (unguarded.peak - guarded.peak) / unguarded.peak:.1f}% lower)")
+    print(f"   ceiling breaches       : {breaches_before}/{len(unguarded.windows)}"
+          f" -> {sum(w > MAX_CONTEXT_TOKENS for w in guarded.windows)}"
+          f"/{len(guarded.windows)}")
+    print(f"   graph output           : identical "
           f"({guarded_result['final_report'] == unguarded_result['final_report']})")
+    print("   token totals -- two different questions:")
+    print(f"     (a) window summed over all transitions : "
+          f"{_fmt(unguarded.cumulative)} -> {_fmt(guarded.cumulative)} "
+          f"({pct_proj:.1f}%)   PROJECTION")
+    print("         no production node reads state.messages, so this assumes a")
+    print("         consumer at every transition")
+    print(f"     (b) prompt tokens at a consuming agent : "
+          f"{_fmt(u_agent.cumulative)} -> {_fmt(g_agent.cumulative)} "
+          f"({pct_real:.1f}%)   MEASURED")
+    print(f"         unguarded prompts {u_agent.prompt_tokens}")
+    print(f"         guarded   prompts {g_agent.prompt_tokens}")
 
     print("\n4. THE ROLLING SUMMARY")
     print("   A 5-round run only ever needs stage 1, so no summary appears above.")
