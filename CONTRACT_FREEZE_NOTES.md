@@ -164,6 +164,23 @@ are needed, say so now; adding them after the freeze needs a team review.
   condensed history separately from `messages`, or will you write the summary
   back into `messages` as a system entry?
 
+  **→ Answered by Person 5 for the tracing half: NO new fields needed.**
+  The redaction layer is read-only on state and side-channels to telemetry,
+  exactly as `ARCHITECTURE_DESIGN.md` §4 specifies. `contract.py` is untouched.
+
+  This is load-bearing, not just tidy. Redaction must apply to the *outbound
+  telemetry copy* and never to live state, because Person 2's grounding
+  validator checks every `verbatim_quote` against `state.raw_input` — a
+  redactor that scrubbed state itself would make every clause fail grounding
+  and collapse the graph into partial-output on every run. `redact_payload()`
+  is therefore a pure function returning a deep copy, held in place by
+  `student_5_trace/test_integration.py::
+  test_redaction_does_not_mutate_the_payload_it_inspects` and
+  `::test_grounding_still_works_after_a_traced_run`.
+
+  The `history_summary` question stays open for the **context/token** half
+  (`student_6_tokens/`), which is not yet built.
+
 ---
 
 ## 8. Integration — the one-line swap for `main_system.py`

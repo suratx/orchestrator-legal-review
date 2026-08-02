@@ -92,18 +92,40 @@ reaching the Reporter.
 
 ---
 
-## Person 5 — Tracing Privacy & Context/Token Management Guardrails
+## Person 5 — Tracing Privacy Guardrail
 
-**Role:** Privacy and Context Management
+**Role:** Global Graph Layer — Tracing & Privacy
 **System:** Multi-agent legal contract review orchestrator (LangGraph, Python)
 
-TODO (Person 5): this role covers two separate guardrails — cover both,
-or split into two ~150-word entries if that reads better:
+On a five-node LangGraph contract-review orchestrator, I owned the tracing layer
+and found we were streaming entire contracts to LangSmith. A run over one seeded
+agreement put 13 of 13 planted secrets — signatory SSN, escrow IBAN,
+counter-party EIN, deal value and a production Postgres DSN — into telemetry,
+511 times across 22 events.
 
-1. `student_5_trace/` — the PII/secret leak to LangSmith you reproduced,
-   the redaction interceptor you built, and the quantified before/after
-   metric (e.g. "leaked PII records: N → 0").
-2. `student_6_tokens/` — the context/token blowup you reproduced, the
-   summarization + pruning guardrail you built, and the quantified
-   before/after metric (e.g. "token spend per failure event: $4.50 →
-   $0.12").
+I built a centralized State Redaction Interceptor on the graph-to-telemetry
+boundary: a keyed HMAC fingerprint for contract body, a pattern registry plus
+key denylist for identifiers, and entity replacement for party names, all
+fail-closed at depth caps and unknown types.
+
+Two findings mattered most. LangSmith's `_hide_run_error` consults only
+`anonymizer`, so the intuitive `hide_inputs`/`hide_outputs` config ships
+tracebacks in the clear. And an env-var-driven `LangChainTracer` opens a second
+upload route through an unredacted global client — my sink looked spotless while
+data left in parallel. I seeded that singleton and added a route audit that
+refuses to run otherwise.
+
+Result: 13/13 secrets and 511 occurrences to zero, +15 ms per run, 34% less
+egress, with all 11 operational fields and the graph's output unchanged.
+
+---
+
+## Person 5 (second guardrail) — Context/Token Management
+
+**Role:** Global Graph Layer — Context Manager
+**System:** Multi-agent legal contract review orchestrator (LangGraph, Python)
+
+TODO: `student_6_tokens/` — the context/token blowup reproduced, the
+summarization + pruning guardrail, and the quantified before/after metric
+(e.g. "token spend per failure event: $4.50 → $0.12"). Not yet started; the
+tracing guardrail above is complete and measured.
