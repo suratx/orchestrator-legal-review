@@ -101,7 +101,7 @@ On a five-node LangGraph contract-review orchestrator, I owned the tracing layer
 and found we were streaming entire contracts to LangSmith. A run over one seeded
 agreement put 13 of 13 planted secrets — signatory SSN, escrow IBAN,
 counter-party EIN, deal value and a production Postgres DSN — into telemetry,
-549 times across 22 events.
+753 times across 28 events.
 
 I built a centralized State Redaction Interceptor on the graph-to-telemetry
 boundary: a keyed HMAC fingerprint for contract body, a pattern registry plus
@@ -113,11 +113,11 @@ Three findings mattered. LangSmith's `_hide_run_error` consults only
 tracebacks in the clear. An env-var-driven `LangChainTracer` opens a second
 upload route through an unredacted global client — my sink looked spotless while
 data left in parallel. And redacting full legal names missed the short forms
-contracts define for themselves, leaving 234 bare references to the parties in
+contracts define for themselves, leaving 306 bare references to the parties in
 the sentences that mattered most.
 
-Result: 13/13 secrets, 549 occurrences and 234 short forms to zero; +18 ms per
-run, 34% less egress, graph output and all 11 operational fields unchanged.
+Result: 13/13 secrets, 753 occurrences and 306 short forms to zero; +34 ms per
+run, 28% less egress, graph output and all 11 operational fields unchanged.
 
 ---
 

@@ -1,7 +1,8 @@
 # Person 5 Metrics — Data Privacy Leak via Telemetry
 
 **Guardrail:** centralized State Redaction Interceptor on the graph→telemetry boundary
-**Measured by:** `python student_5_trace/test_failure.py` (reproduction) and
+**Measured in the fully integrated graph** (all six guardrails active, so the
+transition count includes the Context Manager). **Measured by:** `python student_5_trace/test_failure.py` (reproduction) and
 `pytest student_5_trace/ -q` (42 tests). Every number below is produced by
 running the real compiled LangGraph — no estimates.
 
@@ -18,10 +19,10 @@ into the telemetry stream.
 | Metric | Without guardrail | With guardrail |
 |---|---:|---:|
 | **Unique planted secrets exposed** | **13 of 13** | **0 of 13** |
-| **Total exposure occurrences** | **549** | **0** |
-| **Bare party short forms exposed** | **234** | **0** |
-| Trace events emitted | 22 | 22 |
-| Telemetry payload shipped | 67,829 bytes | 44,398 bytes (−34.5%) |
+| **Total exposure occurrences** | **753** | **0** |
+| **Bare party short forms exposed** | **306** | **0** |
+| Trace events emitted | 28 | 28 |
+| Telemetry payload shipped | 110,389 bytes | 79,524 bytes (−28.0%) |
 | Operational fields preserved | 11 of 11 | 11 of 11 |
 | Graph outcome (`final_report`) | identical | identical |
 
@@ -38,20 +39,20 @@ both.
 
 | Planted secret | Occurrences | Guarded |
 |---|---:|---:|
-| `Acme Corporation` (client name) | 101 | 0 |
-| `Globex Industries Ltd` (counter-party) | 99 | 0 |
-| `db-prod-01.acme.internal` (internal host) | 71 | 0 |
-| `j.okonkwo@globex-industries.example` | 49 | 0 |
-| `postgresql://svc_review:Fak3P4ss@…` (prod DSN) | 38 | 0 |
-| `(713) 555-0182` (signatory phone) | 38 | 0 |
-| `76-4820193` (counter-party EIN) | 33 | 0 |
-| `$1,250,000.00` (deal value) | 33 | 0 |
-| `666-88-7391` (signatory SSN) | 19 | 0 |
-| `GB29NWBK60161331926819` (escrow IBAN) | 19 | 0 |
-| `4820 Kirby Drive, Houston, TX 77098` | 19 | 0 |
-| `AKIAIOSFODNN7EXAMPLE` (AWS key) | 19 | 0 |
-| `lsv2_pt_…` (LangSmith API key) | 11 | 0 |
-| **Total** | **549** | **0** |
+| `Acme Corporation` (client name) | 150 | 0 |
+| `Globex Industries Ltd` (counter-party) | 147 | 0 |
+| `db-prod-01.acme.internal` (internal host) | 92 | 0 |
+| `j.okonkwo@globex-industries.example` | 64 | 0 |
+| `postgresql://svc_review:Fak3P4ss@…` (prod DSN) | 50 | 0 |
+| `(713) 555-0182` (signatory phone) | 50 | 0 |
+| `76-4820193` (counter-party EIN) | 43 | 0 |
+| `$1,250,000.00` (deal value) | 43 | 0 |
+| `666-88-7391` (signatory SSN) | 25 | 0 |
+| `GB29NWBK60161331926819` (escrow IBAN) | 25 | 0 |
+| `4820 Kirby Drive, Houston, TX 77098` | 25 | 0 |
+| `AKIAIOSFODNN7EXAMPLE` (AWS key) | 25 | 0 |
+| `lsv2_pt_…` (LangSmith API key) | 14 | 0 |
+| **Total** | **753** | **0** |
 
 ### Party short forms — the leak the full-name rule misses
 
@@ -64,9 +65,9 @@ matches it, it is just a capitalised word.
 
 | Short form | Standalone occurrences, unguarded | Guarded |
 |---|---:|---:|
-| `Globex` | 106 | 0 |
-| `Acme` | 128 | 0 |
-| **Total** | **234** | **0** |
+| `Globex` | 139 | 0 |
+| `Acme` | 167 | 0 |
+| **Total** | **306** | **0** |
 
 Counted with `count_standalone_occurrences()`, which excludes hits inside the
 full name — a derived short form is normally a prefix of the name it came from,
@@ -150,22 +151,21 @@ would upload in the clear. **Fail closed, not fail quiet.**
 
 | | Median per graph run |
 |---|---:|
-| No tracing at all | 1.73 ms |
-| Unguarded tracing | 2.02 ms |
-| **Redacted tracing** | **20.27 ms** |
-| Redaction overhead | **+18.24 ms/run** (0.83 ms per trace event) |
+| Unguarded tracing | 3.01 ms |
+| **Redacted tracing** | **37.17 ms** |
+| Redaction overhead | **+34.16 ms/run** (1.2 ms per trace event) |
 
-Reported honestly both ways: **+901% relative** to unguarded tracing, and
-**+18 ms absolute** on a run whose real-world cost is dominated by LLM calls
+Reported honestly both ways: **large in relative terms** against a nearly-free
+baseline, and **+34 ms absolute** on a run whose real-world cost is dominated by LLM calls
 measured in seconds. On the live Ollama path a single Analyzer call is ~2–4 s,
 so redaction is well under 1% of wall-clock. The relative figure looks alarming
 only because the baseline it is measured against is nearly free.
 
-Short-form expansion accounts for roughly 3 ms of that: each derived form is an
-additional case-insensitive pass over every string in the payload. Cheap
-relative to what it closes — 234 exposures.
+Short-form expansion is part of that: each derived form is an additional
+case-insensitive pass over every string in the payload. Cheap relative to what
+it closes — 306 exposures.
 
-Payload size *falls* 34.5%, because fingerprinting the contract body replaces
+Payload size *falls* 28.0%, because fingerprinting the contract body replaces
 kilobytes of clause text with a 16-character digest — the guardrail reduces
 egress volume as a side effect.
 
