@@ -1,11 +1,18 @@
 """
 fixtures.py -- Person 5 / Tracing Privacy: the planted-secret corpus.
 
-Everything in this file is SYNTHETIC. No value here is a real credential, a
-real person, a real bank account or a real host. `AKIAIOSFODNN7EXAMPLE` is
-AWS's own published documentation placeholder; the IBAN is the ISO example
-value; every phone number is in the ITU/NANP reserved 555-01xx test range.
-Nothing is ever transmitted anywhere -- the telemetry sink is in-process.
+Everything in this file is SYNTHETIC, and drawn from a reserved range wherever
+one exists. `AKIAIOSFODNN7EXAMPLE` is AWS's own published documentation
+placeholder; the IBAN is the ISO example value; phone numbers are in the NANP
+`555-01xx` and Ofcom `020 7946 0xxx` reserved test ranges; the SSN is in the
+`666-xx-xxxx` block the SSA has never issued; the email uses the reserved
+`.example` TLD. No value here is a real credential, a real person, a real bank
+account or a real host.
+
+Per the assignment's safety mandate, nothing is ever transmitted or written
+anywhere -- the telemetry sink is an in-process list. Enforced by the safety
+tests in `test_integration.py`, which block sockets outright and assert the
+module contains no filesystem or shell primitives.
 
 WHY A FIXTURE FILE AT ALL
     The metric "leaked PII records: N -> 0" is only meaningful if N is
@@ -40,7 +47,7 @@ PLANTED_SECRETS: Dict[str, str] = {
     # --- counter-party / signatory PII -------------------------------------
     "signatory_email": "j.okonkwo@globex-industries.example",
     "signatory_phone": "(713) 555-0182",
-    "signatory_ssn": "412-88-7391",
+    "signatory_ssn": "666-88-7391",
     "signatory_address": "4820 Kirby Drive, Houston, TX 77098",
     "counterparty_ein": "76-4820193",
     "escrow_iban": "GB29NWBK60161331926819",
@@ -159,7 +166,7 @@ OBFUSCATED_SECRETS: List[Dict[str, Any]] = [
     },
     {
         "label": "ssn_space_separated",
-        "value": "SSN 412 88 7391",
+        "value": "SSN 666 88 7391",
         "expected_caught": True,
         "note": "CAUGHT. The SSN rule accepts spaces as well as hyphens.",
     },
