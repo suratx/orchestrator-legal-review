@@ -24,7 +24,7 @@ concrete rather than academic:
 | Rogue tool execution | An unreviewed redline is written into a live document |
 | Cascade failure | A malformed redline crashes verification, or worse, passes it |
 | Privacy leak | Client names and deal terms land in a cloud telemetry dashboard |
-| Context explosion | Long contracts blow the window and latency with it |
+| Context explosion | Long reviews blow the context window and the token budget with it |
 
 **Input:** raw contract text. **Output:** a structured review report — extracted
 clauses, risk tags, proposed redlines, validation notes — or, if any guardrail
@@ -52,6 +52,22 @@ fail loudly and stop, never to fail quietly and continue.
 Not a linear pipeline: every worker returns control to the Coordinator, which
 reads state flags and decides whether to go forward, roll back, or stop. That
 single choke point is what makes a deterministic loop guardrail possible.
+
+The two **global layers** are not workers, so they do not appear above. This is
+where they actually attach in `main_system.py`:
+
+```
+ entry ──► [ Context Manager ] ──► [ Coordinator ] ──► workers ──┐
+                  ▲                                              │
+                  └──────────────  analyzer / validator  ◄────────┘
+
+ every node transition ──► [ Redaction Interceptor ] ──► telemetry
+```
+
+The Context Manager (#6) runs at the head of every loop transition, so no worker
+can hand the model a window it has not bounded. The Redaction Interceptor (#5)
+sits on the graph→telemetry boundary rather than inside any node, so it covers
+all six nodes — and any node added later — by construction.
 
 Full topology, node interfaces and routing/retry/rollback rules:
 [`ARCHITECTURE_DESIGN.md`](ARCHITECTURE_DESIGN.md).
@@ -110,13 +126,16 @@ model, so `pytest` passes with Ollama stopped.
 python main_system.py
 
 # Everything
-pytest -v                                  # 120 tests
+pytest -v                                  # 124 tests
 
 # One person's failure-mode reproduction + metrics table
 python student_1_loop/test_failure.py      # infinite loop
 python student_2_silent/test_failure.py    # silent hallucination
 python student_5_trace/test_failure.py     # PII/secret leak to telemetry
 python student_6_tokens/test_failure.py    # context explosion / token burn
+
+# Reproducible measurement (offline)
+python student_6_tokens/benchmark.py       # window sizes, token totals, latency
 
 # Live measurement against the real model (needs ollama serve)
 python student_2_silent/benchmark_live.py --runs 12
@@ -172,6 +191,7 @@ orchestrator-legal-review/
 ├── CONTRACT_FREEZE_NOTES.md     # freeze review record
 ├── DESIGN_DOCS.md               # 19 alternative failure risks considered
 ├── INTERVIEW_STORIES.md         # six ~150-word interview narratives
+├── PROJECT_OVERVIEW.md          # status snapshot (not a graded deliverable)
 ├── contract.py                  # THE FROZEN CONTRACT
 ├── main_system.py               # the integrated graph, all guardrails active
 ├── requirements.txt
@@ -180,7 +200,7 @@ orchestrator-legal-review/
       ├── snippet.py             # where the guardrail sits in the graph
       ├── test_failure.py        # reproduction: the failure, unguarded
       ├── METRICS.md             # before/after numbers
-      └── demo.mp4               # 2-minute failure/guardrail demonstration
+      └── demo.mp4               # 2-minute demo (recorded per person)
 ```
 
 ---
