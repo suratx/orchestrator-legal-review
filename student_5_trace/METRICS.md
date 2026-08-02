@@ -1,346 +1,228 @@
-# Person 5 Metrics — Data Privacy Leak via Telemetry
+# Student 5 Metrics — Data Privacy Leak via Telemetry
 
-**Guardrail:** centralized State Redaction Interceptor on the graph→telemetry boundary
-**Measured in the fully integrated graph** (all six guardrails active, so the
-transition count includes the Context Manager). **Measured by:** `python student_5_trace/test_failure.py` (reproduction) and
-`pytest student_5_trace/ -q` (42 tests). Every number below is produced by
-running the real compiled LangGraph — no estimates.
+## Evaluation overview
 
-**Method.** A contract carrying **13 planted secrets** (`fixtures.SECRET_CORPUS`)
-is driven through the real graph twice: once with tracing configured the way an
-unconfigured LangSmith integration configures it, once with the interceptor in
-front. `scan_for_leaks()` then counts how many of those 13 exact strings survive
-into the telemetry stream.
+**Guardrail:** Centralized State Redaction Interceptor at the graph-to-telemetry boundary
 
----
+**Reproduction commands:**
 
-## Headline: before / after
+```bash
+python student_5_trace/test_failure.py
+pytest student_5_trace/ -q
+```
+
+The evaluation uses the fully integrated LangGraph with all six guardrails active. A synthetic contract containing 13 known secrets is processed twice using the same graph and input. The unguarded run records raw telemetry, while the guarded run passes every telemetry event through the redaction interceptor. Both runs use an in-memory sink, so no data is written to disk or transmitted externally.
+
+The planted values include personal identifiers, party names, financial information, database credentials, internal infrastructure details, and API keys. Because the complete secret corpus is known in advance, leakage can be measured directly rather than assessed through visual inspection.
+
+## Before-and-after results
 
 | Metric | Without guardrail | With guardrail |
 |---|---:|---:|
 | **Unique planted secrets exposed** | **13 of 13** | **0 of 13** |
-| **Total exposure occurrences** | **753** | **0** |
-| **Bare party short forms exposed** | **306** | **0** |
-| Trace events emitted | 28 | 28 |
-| Telemetry payload shipped | 110,389 bytes | 79,524 bytes (−28.0%) |
+| **Total secret occurrences exposed** | **753** | **0** |
+| **Standalone party aliases exposed** | **306** | **0** |
+| Trace events retained | 28 | 28 |
+| Telemetry payload size | 110,389 bytes | 79,524 bytes |
+| Payload reduction | — | 28.0% |
 | Operational fields preserved | 11 of 11 | 11 of 11 |
-| Graph outcome (`final_report`) | identical | identical |
+| Final graph output | Baseline | Identical to baseline |
 
-### Why two leak numbers, not one
+The unique-secret count identifies how many distinct confidential values reached telemetry. Total occurrences measure the broader exposure because the same secret may appear in several node inputs, outputs, metadata fields, or errors. The guardrail eliminated both forms of leakage while retaining every trace event.
 
-They answer different questions and a single figure hides one of them.
-**Unique secrets exposed** is the privacy question — *which* secrets are now in
-the dashboard, i.e. what has to be rotated and who has to be notified. **Total
-occurrences** is the blast-radius question — one API key appearing in 38 events
-is one credential to rotate but 38 records to purge. An incident response needs
-both.
+## Per-secret exposure
 
-### Per-secret exposure, unguarded
-
-| Planted secret | Occurrences | Guarded |
+| Planted value | Unguarded occurrences | Guarded occurrences |
 |---|---:|---:|
-| `Acme Corporation` (client name) | 150 | 0 |
-| `Globex Industries Ltd` (counter-party) | 147 | 0 |
-| `db-prod-01.acme.internal` (internal host) | 92 | 0 |
-| `j.okonkwo@globex-industries.example` | 64 | 0 |
-| `postgresql://svc_review:Fak3P4ss@…` (prod DSN) | 50 | 0 |
-| `(713) 555-0182` (signatory phone) | 50 | 0 |
-| `76-4820193` (counter-party EIN) | 43 | 0 |
-| `$1,250,000.00` (deal value) | 43 | 0 |
-| `666-88-7391` (signatory SSN) | 25 | 0 |
-| `GB29NWBK60161331926819` (escrow IBAN) | 25 | 0 |
-| `4820 Kirby Drive, Houston, TX 77098` | 25 | 0 |
-| `AKIAIOSFODNN7EXAMPLE` (AWS key) | 25 | 0 |
-| `lsv2_pt_…` (LangSmith API key) | 14 | 0 |
+| Client name | 150 | 0 |
+| Counterparty name | 147 | 0 |
+| Internal hostname | 92 | 0 |
+| Signatory email | 64 | 0 |
+| Database connection string | 50 | 0 |
+| Signatory phone number | 50 | 0 |
+| Counterparty EIN | 43 | 0 |
+| Contract value | 43 | 0 |
+| Signatory SSN | 25 | 0 |
+| Escrow IBAN | 25 | 0 |
+| Signatory address | 25 | 0 |
+| AWS access key | 25 | 0 |
+| LangSmith API key | 14 | 0 |
 | **Total** | **753** | **0** |
 
-### Party short forms — the leak the full-name rule misses
+All values are synthetic. Emails use the reserved `.example` domain, telephone numbers use reserved test ranges, the AWS key is a published placeholder, and the SSN uses an unissued range.
 
-Redacting `Globex Industries Ltd` does nothing for `"Globex breached its duty
-to Acme"`. Contracts define short forms in their opening paragraph —
-`... Acme Corporation ("Acme") and Globex Industries Ltd ("Globex") ...` — and
-use them for everything after, which is exactly where the damaging sentences
-live. Nothing marks a short form as sensitive: no key holds it, no pattern
-matches it, it is just a capitalised word.
+## Party-alias protection
 
-| Short form | Standalone occurrences, unguarded | Guarded |
+Removing a full legal name does not protect shorter references such as `Acme` or `Globex`. These aliases are common in contracts and may appear independently throughout the document.
+
+| Standalone alias | Unguarded occurrences | Guarded occurrences |
 |---|---:|---:|
 | `Globex` | 139 | 0 |
 | `Acme` | 167 | 0 |
 | **Total** | **306** | **0** |
 
-Counted with `count_standalone_occurrences()`, which excludes hits inside the
-full name — a derived short form is normally a prefix of the name it came from,
-so a naive substring count would tally every full-name occurrence as a
-short-form leak too and inflate both columns.
+The interceptor obtains aliases by removing corporate suffixes from known party names and parsing aliases defined in the contract. Generic words are rejected to limit over-redaction. For example, `The Boeing Company` can yield `Boeing`, whereas `First National Bank` produces no automatically derived alias because its individual terms are too generic.
 
-Short forms come from two places, mirroring how the full names are obtained:
+Standalone occurrences are counted separately from appearances inside full legal names to avoid inflating the results.
 
-1. **Derived** by stripping corporate suffixes — `Globex Industries Ltd` →
-   `Globex Industries`, `Globex`; `Acme Corporation` → `Acme`.
-2. **Parsed** from the contract's own parenthesised definitions, which catches
-   aliases no derivation rule would produce: a code name, an acronym, a trading
-   name.
+## Telemetry-channel coverage
 
-Derivation is filtered, because over-redaction is its own failure mode. A party
-called `First National Bank` yields **no** short form — every token is too
-generic, and blanking "First" out of every trace would destroy readable prose
-while protecting nobody. `The Boeing Company` correctly skips the generic
-leading token and yields `Boeing`. Enforced by
-`test_derivation_refuses_generic_short_forms`.
+Protecting only inputs and outputs is insufficient because sensitive information may also appear in metadata, tags, and exception messages.
 
----
+| Telemetry channel | Sensitive values before | Sensitive values after | Protection method |
+|---|---:|---:|---|
+| Inputs and outputs | 11 | 0 | Recursive payload redaction |
+| Metadata | 4 | 0 | Dedicated metadata transformation |
+| Tags | 1 | 0 | Explicit tag redaction |
+| Error messages | 2 | 0 | Exception-string redaction |
 
-## Channel coverage — inputs/outputs is only one of four
+The implementation was verified against LangSmith 0.10.15. Inputs, outputs, and errors are protected through the client anonymizer, while metadata uses its separate transformation hook. Tags are sanitized directly by the interceptor.
 
-The common half-measure is to redact `inputs` and `outputs` and declare victory.
-Verified against the installed `langsmith 0.10.15` source, that leaves two
-channels wide open:
+## Guardrail mechanisms
 
-| Channel | SDK hook | Consults `anonymizer`? | Consequence of the half-measure |
-|---|---|---|---|
-| inputs / outputs | `_hide_run_inputs` / `_hide_run_outputs` | yes (takes precedence) | covered |
-| **metadata** | `_hide_run_metadata` | **no** — needs its own `hide_metadata=` | client name + internal host uploaded in full |
-| **error strings** | `_hide_run_error` | **only** `_anonymizer`; ignores `hide_inputs`/`hide_outputs` entirely | tracebacks and any credential inside them uploaded in full |
-| tags | none | n/a — SDK does not scrub tags at all | `host:db-prod-01.acme.internal` uploaded in full |
+| Mechanism | Purpose |
+|---|---|
+| Regular-expression registry | Detects emails, phone numbers, SSNs, EINs, IBANs, cards, connection strings, internal hosts, financial values, and provider-specific API keys |
+| Sensitive-key denylist | Removes values under fields such as `api_key`, `password`, `secret`, `ssn`, and `iban`, regardless of their format |
+| Entity and alias replacement | Removes client names, counterparties, signatories, and contract-defined short forms |
+| HMAC fingerprinting | Replaces complete contract text and verbatim quotations with keyed fingerprints and approximate length buckets |
+| Recursive payload traversal | Protects nested dictionaries, lists, tuples, and Pydantic models |
+| Fail-closed handling | Withholds values when the payload cannot be safely processed |
+| Tracing-route audit | Refuses to run if any detected telemetry route lacks redaction |
 
-So the correct client configuration is `anonymizer=` (which covers inputs,
-outputs **and** errors) **plus** `hide_metadata=` — not the intuitive
-`hide_inputs`+`hide_outputs`+`hide_metadata`, which ships every error message
-in the clear. Tags are handled in the interceptor because the SDK will not.
+## Tracing-route protection
 
-| Channel | Secrets before | Secrets after |
-|---|---:|---:|
-| inputs / outputs | 11 | 0 |
-| metadata | 4 | 0 |
-| tags | 1 | 0 |
-| error string | 2 | 0 |
+An explicitly attached redacting callback is not sufficient when environment-based LangSmith tracing automatically creates another tracer. The route audit therefore checks both explicit and implicit tracing paths.
 
----
-
-## Closing the second upload route
-
-Attaching a `RedactingTracer` protects the route you can see. With
-`LANGSMITH_TRACING` set, `langchain-core` **also** auto-attaches a
-`LangChainTracer`, and that tracer resolves its client through
-`run_trees.get_cached_client()` — a bare, unredacted `Client()`:
-
-```
-LangChainTracer.__init__:  self.client = client or get_client()
-get_client()            -> run_trees.get_cached_client()
-get_cached_client()     -> global _CLIENT = Client()      # no redaction
-```
-
-The local sink would have shown a spotless, fully-redacted stream **while the
-unredacted state went to the cloud in parallel** — a guardrail reporting success
-precisely while it fails.
-
-| Route | Detected by `audit_tracing_routes()` | Closed by |
+| Tracing route | Detection | Protection |
 |---|---|---|
-| explicit `callbacks=[…]` | yes | `RedactingTracer` |
-| implicit `LangChainTracer` (env-var driven) | yes | seeding the global `_CLIENT` with the redacting client |
-| a third-party callback handler | yes — flagged, not trusted | run refused |
+| Explicit graph callback | Inspected before execution | `RedactingTracer` |
+| Automatically attached LangChain tracer | Detected through tracing configuration | Redacting global LangSmith client |
+| Unknown third-party callback | Treated as unverified | Execution refused |
 
-`redacted_trace_config()` audits before returning and raises
-`UnredactedTracingRouteError` rather than hand back a config while any route
-would upload in the clear. **Fail closed, not fail quiet.**
+If any route is not confirmed safe, `UnredactedTracingRouteError` is raised before tracing begins. This prevents a clean local trace from hiding a simultaneous unredacted upload path.
 
----
+## Operational preservation
 
-## Cost of the guardrail
+The interceptor sanitizes a copy created for telemetry and never modifies the live graph state. This is necessary because the Analyzer verifies that each extracted quotation appears verbatim in the original contract. Redacting the operational state would cause valid clauses to fail grounding.
 
-| | Median per graph run |
+The guarded and unguarded executions produced identical values for the final report and all operational fields used by the graph. The following 11 fields remained available for debugging:
+
+- `round_number`
+- `next_route`
+- `is_validated`
+- `rejection_flag`
+- `analysis_retry_count`
+- `task_domain`
+- Node names
+- `clause_type`
+- `risk_level`
+- Matter type
+- Graph version
+
+All 28 trace events were retained, demonstrating that the guardrail preserves observability rather than disabling tracing.
+
+## Performance
+
+| Measurement | Result |
 |---|---:|
-| Unguarded tracing | 3.01 ms |
-| **Redacted tracing** | **37.17 ms** |
-| Redaction overhead | **+34.16 ms/run** (1.2 ms per trace event) |
+| Median unguarded tracing time | 3.01 ms per graph run |
+| Median guarded tracing time | 37.17 ms per graph run |
+| Absolute redaction overhead | 34.16 ms per graph run |
+| Approximate overhead per trace event | 1.2 ms |
+| Telemetry payload reduction | 28.0% |
 
-Reported honestly both ways: **large in relative terms** against a nearly-free
-baseline, and **+34 ms absolute** on a run whose real-world cost is dominated by LLM calls
-measured in seconds. On the live Ollama path a single Analyzer call is ~2–4 s,
-so redaction is well under 1% of wall-clock. The relative figure looks alarming
-only because the baseline it is measured against is nearly free.
+The privacy layer adds approximately 34 ms per run. This is large relative to the nearly cost-free local tracing baseline but small compared with model calls measured in seconds. Fingerprinting complete contract fields also reduces the amount of telemetry data transmitted.
 
-Short-form expansion is part of that: each derived form is an additional
-case-insensitive pass over every string in the payload. Cheap relative to what
-it closes — 306 exposures.
+## False positives and limitations
 
-Payload size *falls* 28.0%, because fingerprinting the contract body replaces
-kilobytes of clause text with a 16-character digest — the guardrail reduces
-egress volume as a side effect.
+### Benign-lookalike evaluation
 
----
-
-## What it costs in observability — measured, not asserted
-
-A redactor that eats operational strings gets switched off, and a guardrail
-that is switched off is a privacy failure by another route. So the false
-positives are measured against a corpus of harmless strings shaped like
-secrets (`fixtures.BENIGN_LOOKALIKES`):
-
-| Benign value | Preserved? |
+| Benign value | Preserved |
 |---|---|
-| `Section 4.2` (clause reference) | ✅ |
-| `2026-08-01` (ISO date) | ✅ |
-| `MSA-001` (matter ID) | ✅ |
-| `llama3.2` (model name) | ✅ |
-| `round 3 of 5` | ✅ |
-| `1.0.0` (contract version) | ✅ |
-| `PN 12-3456789` (internal part number) | ❌ **known false positive** |
+| `Section 4.2` | Yes |
+| `2026-08-01` | Yes |
+| `MSA-001` | Yes |
+| `llama3.2` | Yes |
+| `round 3 of 5` | Yes |
+| `1.0.0` | Yes |
+| `PN 12-3456789` | No |
 
-**False-positive rate: 1 of 7 (14.3%).** The failure is not fixable by tuning:
-a US EIN is `NN-NNNNNNN` and so is that part number — they are digit-for-digit
-identical, and no regex can separate them without context. It is kept in the
-corpus and published rather than quietly tuned away, and
-`test_documented_false_positive_rate` fails if the rate changes without the
-table being updated.
+The measured false-positive rate is **1 of 7, or 14.3%**. The part number has the same `NN-NNNNNNN` structure as a US EIN, so format matching alone cannot reliably distinguish the two.
 
-Everything an on-call engineer actually needs still reaches the dashboard:
-`round_number`, `next_route`, `is_validated`, `rejection_flag`,
-`analysis_retry_count`, `task_domain`, node names, `clause_type`, `risk_level`,
-and non-sensitive metadata. Asserted by `test_operational_fields_survive_redaction`.
+### Non-standard-format evaluation
 
----
-
-## Known blind spots — measured against deliberately awkward formats
-
-Regexes match formats, so anything that changes the format evades them
-(`fixtures.OBFUSCATED_SECRETS`):
-
-| Variant | Caught? |
+| Variant | Detection result |
 |---|---|
-| `SSN 666 88 7391` (spaces not hyphens) | ✅ |
-| `+44 20 7946 0958` (international phone) | ✅ |
-| `NHS 943 476 5919` (UK national ID) | ⚠️ **caught incidentally, mislabelled** |
-| `j.okonkwo [at] globex-industries [dot] example` | ❌ missed |
-| `bHN2Ml9wdF9…` (base64-wrapped key) | ❌ missed |
+| Space-separated SSN | Detected |
+| International telephone number | Detected |
+| UK NHS number | Detected but misclassified as a phone number |
+| Email written using `[at]` and `[dot]` | Missed |
+| Base64-encoded API key | Missed |
 
-**Recall on non-standard formats: 3 of 5 (60%), with 1 of those 3 mislabelled.**
-The NHS case is worth stating plainly: a UK NHS number is 3-3-4 digits, which is
-also the US phone shape, so it is redacted as `[REDACTED:PHONE]`. The value is
-protected — which is what matters — but anyone reading the trace draws the wrong
-conclusion about what kind of identifier was present. Real non-US coverage needs
-a dedicated rule, not a lucky collision.
+Recall on these deliberately difficult formats is **3 of 5, or 60%**, with one detected value assigned the wrong category. The key denylist and complete-field fingerprinting reduce dependence on regex detection, but arbitrary encoding and previously unseen international identifiers remain limitations.
 
-Three structural defences exist precisely because pattern matching is not
-sufficient on its own, and none of them depend on recognising a format:
+## Fail-closed behavior
 
-1. **Key-name denylist** — `api_key`, `password`, `ssn`, `iban` and friends are
-   dropped on the key name whatever the value looks like.
-2. **Field fingerprinting** — `raw_input` and `verbatim_quote` are replaced
-   wholesale, so the contract body never has to be pattern-matched at all. (This
-   is why `[REDACTED:SSN]` and `[REDACTED:BANK_ACCOUNT]` do not appear in the
-   demo's fired-rule list: those values live inside `raw_input`, which is
-   fingerprinted before any regex runs.)
-3. **Fail-closed defaults** — depth cap, cycles, unknown object types and
-   redactor crashes all return a sentinel, never the value.
+| Failure condition | Safe response |
+|---|---|
+| Nesting exceeds `MAX_DEPTH` | `[REDACTED:MAX_DEPTH_EXCEEDED]` |
+| Cyclic reference detected | `[REDACTED:CYCLIC_REFERENCE]` |
+| Unsupported object type encountered | `[REDACTED:UNSUPPORTED_TYPE]` |
+| Redaction function raises an exception | Payload withheld; only the exception type is retained |
+| Unprotected tracing route detected | Execution refused with `UnredactedTracingRouteError` |
 
----
+The interceptor never returns raw data as a fallback. Exception messages are also sanitized because they may contain database addresses, passwords, or authorization headers.
 
-## Fail-closed behaviour
+## Pseudonymization of contract text
 
-| Escape hatch | Behaviour | Test |
-|---|---|---|
-| Nesting deeper than `MAX_DEPTH` (12) | `[REDACTED:MAX_DEPTH_EXCEEDED]` | `test_depth_cap_redacts_rather_than_returning_the_value` |
-| Cyclic reference | `[REDACTED:CYCLIC_REFERENCE]` | `test_cycles_fail_closed` |
-| Arbitrary object (`repr` may hold a DSN or auth header) | `[REDACTED:UNSUPPORTED_TYPE]:<Class>` | `test_unknown_object_types_fail_closed` |
-| The redactor itself raises | `{"__redaction_error__": "<ExcType>"}` — type name only, never `str(exc)` | `test_a_redactor_crash_drops_the_payload_instead_of_passing_it_through` |
-| An unredacted tracing route exists | `UnredactedTracingRouteError`, run refused | `test_implicit_tracing_route_is_detected_and_refused` |
+Complete fields such as `raw_input` and `verbatim_quote` are replaced with:
 
-The depth cap deserves the emphasis: returning the unexamined value at the cap
-would turn the recursion guard into an exfiltration primitive, since nesting
-depth is attacker-controlled the moment any node writes model output into state.
-The exception-message rule matters for the same reason — an exception raised
-while walking a payload routinely quotes the offending value straight back, so
-substituting `str(exc)` for a dropped payload would reintroduce the exact leak.
+```text
+[REDACTED:TEXT hmac=<16-hex-digest> len=<bucket>]
+```
 
----
+The implementation uses HMAC-SHA-256 with a process-local random key, truncates the digest, and reports only an approximate length category. This allows repeated processing of the same document to be recognized within a process without exposing its contents.
 
-## Pseudonymization, not anonymization
+This mechanism is pseudonymization rather than complete anonymization. Identical documents remain linkable within the same process, and the length category reveals their approximate size. A deployment may provide `TRACE_FINGERPRINT_KEY` when stable cross-process correlation is required.
 
-`raw_input` and `verbatim_quote` are replaced with
-`[REDACTED:TEXT hmac=<16 hex> len=<bucket>]`. Stated precisely, this is
-**pseudonymization**: a digest is deterministic, so it still reveals whether two
-runs saw the same document, and an adversary holding a candidate document could
-confirm a match against a plain hash.
+## Contract and safety compliance
 
-Three mitigations, and the residual risk:
+The privacy layer adds no state fields and does not modify `contract.py`. It operates as a read-only telemetry layer and preserves the frozen shared-state contract.
 
-| | Choice | Why |
-|---|---|---|
-| Algorithm | **HMAC**-SHA-256, not bare SHA-256 | the digest cannot be recomputed without the key |
-| Key | process-local, 32 random bytes; never logged, serialized or sent to the sink | nobody outside the process can brute-force candidate documents |
-| Length | bucketed (`<256`, `256-1k`, `1k-4k`, `4k-16k`, `>16k`) | an exact character count is itself a weak identifier of a known document |
+All external behavior is mocked:
 
-**Residual risk, disclosed:** identical documents remain linkable *within* a
-process, and the bucket still reveals the contract's rough size. That is the
-deliberate trade — it is exactly the property that lets an on-call engineer ask
-"is this the same document as the run that failed?" without the text ever
-leaving the process. `TRACE_FINGERPRINT_KEY` can supply a stable local key when
-cross-restart correlation is worth more than key ephemerality.
+| Safety requirement | Verification |
+|---|---|
+| No network traffic during the guarded run | Socket connections are blocked in testing |
+| No network traffic during the unguarded reproduction | The leak is captured only by `InMemorySink` |
+| No file modifications | File and shell-writing primitives are prohibited |
+| No real LangSmith upload | No create, update, batch-ingest, or flush method is invoked |
+| No real credentials or personal information | All planted values are synthetic placeholders |
 
----
-
-## Contract-freeze compliance
-
-Zero changes to `contract.py`. This layer adds **no state fields** — the answer
-to the open question in `CONTRACT_FREEZE_NOTES.md` §7 for the tracing half of
-Person 5's scope. It is read-only on state and side-channels to telemetry,
-exactly as `ARCHITECTURE_DESIGN.md` §4 specifies.
-
-That is not merely tidiness. Person 2's grounding validator checks every
-`verbatim_quote` against `state.raw_input`; a redactor that scrubbed live state
-instead of the outbound copy would make every clause fail grounding and collapse
-the graph into partial-output on every run. `redact_payload()` is a pure
-function returning a deep copy, and
-`test_redaction_does_not_mutate_the_payload_it_inspects` plus
-`test_grounding_still_works_after_a_traced_run` hold that line.
-
----
+A LangSmith client is constructed only to verify its redaction configuration. It is never used to transmit telemetry.
 
 ## Test summary
 
+```text
+pytest student_5_trace/ -q
+42 passed
 ```
-pytest student_5_trace/ -q     ->  42 passed
-```
 
-Covering the reproduction against the real compiled graph, all four telemetry
-channels, tracing-route control, party short forms, every fail-closed path, the
-pseudonymization properties, the measured cost in observability, and the safety
-mandate below.
+The tests cover:
 
----
+- Deterministic reproduction of the unguarded privacy leak
+- Elimination of all planted secrets
+- Inputs, outputs, metadata, tags, and error messages
+- Explicit and implicit tracing-route protection
+- Party-name and short-form removal
+- False positives and difficult formats
+- Recursive and fail-closed behavior
+- Operational-state preservation
+- HMAC fingerprinting
+- Frozen-contract compliance
+- Network, filesystem, and external-upload safety
 
-## Safety mandate compliance
+## Conclusion
 
-> *"All actions interacting with external infrastructure must be mocked... even
-> inside your broken test failure instances."*
-
-This layer is the one most exposed to that rule, since its entire subject is
-shipping data to a third-party cloud service. So the property is **tested, not
-promised**:
-
-| Requirement | How it is enforced | Test |
-|---|---|---|
-| No network traffic | `socket.connect` monkeypatched to raise; the full guarded run still completes | `test_no_network_traffic_during_a_traced_run` |
-| ...including in the broken path | same, over the *unguarded* reproduction — the "leak" goes to an in-process list | `test_no_network_traffic_during_the_unguarded_reproduction` |
-| No file modifications | the module is asserted to contain no `open(`, `os.remove`, `os.system`, `shutil.`, `subprocess` | `test_module_touches_no_filesystem` |
-| No real telemetry upload | no `create_run` / `update_run` / `batch_ingest` / `.flush(` call exists anywhere | `test_no_real_langsmith_upload_path_is_invoked` |
-
-Two deliberate design decisions behind those tests:
-
-- **`InMemorySink` only.** An earlier draft carried a `JsonlSink` that appended
-  trace events to a local file. It was **removed** rather than kept: it wrote a
-  file, and it would have written to disk exactly the data this layer exists to
-  keep out of storage. The reproduction demonstrates a total PII leak without a
-  single byte being written or transmitted.
-- **A LangSmith `Client` is constructed, never used to transmit.** It exists so
-  its redaction configuration can be *verified* (`anonymizer` and
-  `hide_metadata` both set). Construction opens no connection — confirmed with
-  sockets blocked — and no upload method is ever called.
-
-Every planted value is synthetic and drawn from a reserved range wherever one
-exists: `AKIAIOSFODNN7EXAMPLE` is AWS's published documentation placeholder, the
-IBAN is the ISO example value, phone numbers are in the NANP `555-01xx` and
-Ofcom `020 7946 0xxx` reserved test ranges, the SSN is in the `666-xx-xxxx`
-block the SSA has never issued, and the email uses the reserved `.example` TLD.
+The unguarded graph exposed all 13 planted secrets across 753 telemetry occurrences and leaked 306 standalone party aliases. The State Redaction Interceptor reduced all measured leakage to zero while retaining all 28 trace events, preserving all 11 operational fields, and producing an identical final report. The guardrail therefore prevents telemetry-based privacy leakage without disabling observability or changing the graph’s behavior.
