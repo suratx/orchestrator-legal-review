@@ -1,8 +1,5 @@
 # Interview Stories
 
-Six quantified, professional descriptions — one per team member — of the
-failure mode each person found and the guardrail they built to fix it.
-~150 words each.
 
 ---
 
