@@ -53,14 +53,24 @@ def test_grounded_analysis_produces_a_full_report():
 
 def test_stubborn_hallucination_degrades_gracefully_instead_of_looping():
     """The two guardrails composing: mine refuses to emit invented data, Person
-    1's refuses to retry forever. Together they must terminate cleanly."""
+    1's refuses to retry forever. Together they must terminate cleanly.
+
+    A deterministic hallucination produces a byte-identical rejection reason on
+    every attempt, which trips the Coordinator's repeated-rejection escalation
+    (`student_1_loop/snippet.py`) rather than the round ceiling -- so this
+    terminates in one round instead of spending all of MAX_ROUNDS.
+    """
     result = _graph(HALLUCINATED_ANALYSIS).invoke(
         AgentState(raw_input=SAMPLE_CONTRACT),
         config={"recursion_limit": RECURSION_LIMIT},
     )
 
     assert result["final_report"].startswith("PARTIAL -- MANUAL REVIEW REQUIRED")
-    assert result["round_number"] == MAX_ROUNDS
+    # Escalated early, and never exhausted the budget. Pinned to MAX_ROUNDS
+    # rather than to a literal 1 so retuning the escalation cannot silently
+    # turn this into an unbounded loop.
+    assert 0 < result["round_number"] < MAX_ROUNDS
+    assert len(result["rejection_reason_history"]) == 2
     assert result["analysis_payload"] == {}  # nothing invented was persisted
     assert result["is_validated"] is False
     assert result["rejection_reason_history"]
