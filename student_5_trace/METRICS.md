@@ -2,7 +2,7 @@
 
 **Guardrail:** centralized State Redaction Interceptor on the graph→telemetry boundary
 **Measured by:** `python student_5_trace/test_failure.py` (reproduction) and
-`pytest student_5_trace/ -q` (32 tests). Every number below is produced by
+`pytest student_5_trace/ -q` (42 tests). Every number below is produced by
 running the real compiled LangGraph — no estimates.
 
 **Method.** A contract carrying **13 planted secrets** (`fixtures.SECRET_CORPUS`)
@@ -46,7 +46,7 @@ both.
 | `(713) 555-0182` (signatory phone) | 38 | 0 |
 | `76-4820193` (counter-party EIN) | 33 | 0 |
 | `$1,250,000.00` (deal value) | 33 | 0 |
-| `412-88-7391` (signatory SSN) | 19 | 0 |
+| `666-88-7391` (signatory SSN) | 19 | 0 |
 | `GB29NWBK60161331926819` (escrow IBAN) | 19 | 0 |
 | `4820 Kirby Drive, Houston, TX 77098` | 19 | 0 |
 | `AKIAIOSFODNN7EXAMPLE` (AWS key) | 19 | 0 |
@@ -209,7 +209,7 @@ Regexes match formats, so anything that changes the format evades them
 
 | Variant | Caught? |
 |---|---|
-| `SSN 412 88 7391` (spaces not hyphens) | ✅ |
+| `SSN 666 88 7391` (spaces not hyphens) | ✅ |
 | `+44 20 7946 0958` (international phone) | ✅ |
 | `NHS 943 476 5919` (UK national ID) | ⚠️ **caught incidentally, mislabelled** |
 | `j.okonkwo [at] globex-industries [dot] example` | ❌ missed |
@@ -301,9 +301,46 @@ function returning a deep copy, and
 ## Test summary
 
 ```
-pytest student_5_trace/ -q     ->  38 passed
+pytest student_5_trace/ -q     ->  42 passed
 ```
 
 Covering the reproduction against the real compiled graph, all four telemetry
 channels, tracing-route control, party short forms, every fail-closed path, the
-pseudonymization properties, and the measured cost in observability.
+pseudonymization properties, the measured cost in observability, and the safety
+mandate below.
+
+---
+
+## Safety mandate compliance
+
+> *"All actions interacting with external infrastructure must be mocked... even
+> inside your broken test failure instances."*
+
+This layer is the one most exposed to that rule, since its entire subject is
+shipping data to a third-party cloud service. So the property is **tested, not
+promised**:
+
+| Requirement | How it is enforced | Test |
+|---|---|---|
+| No network traffic | `socket.connect` monkeypatched to raise; the full guarded run still completes | `test_no_network_traffic_during_a_traced_run` |
+| ...including in the broken path | same, over the *unguarded* reproduction — the "leak" goes to an in-process list | `test_no_network_traffic_during_the_unguarded_reproduction` |
+| No file modifications | the module is asserted to contain no `open(`, `os.remove`, `os.system`, `shutil.`, `subprocess` | `test_module_touches_no_filesystem` |
+| No real telemetry upload | no `create_run` / `update_run` / `batch_ingest` / `.flush(` call exists anywhere | `test_no_real_langsmith_upload_path_is_invoked` |
+
+Two deliberate design decisions behind those tests:
+
+- **`InMemorySink` only.** An earlier draft carried a `JsonlSink` that appended
+  trace events to a local file. It was **removed** rather than kept: it wrote a
+  file, and it would have written to disk exactly the data this layer exists to
+  keep out of storage. The reproduction demonstrates a total PII leak without a
+  single byte being written or transmitted.
+- **A LangSmith `Client` is constructed, never used to transmit.** It exists so
+  its redaction configuration can be *verified* (`anonymizer` and
+  `hide_metadata` both set). Construction opens no connection — confirmed with
+  sockets blocked — and no upload method is ever called.
+
+Every planted value is synthetic and drawn from a reserved range wherever one
+exists: `AKIAIOSFODNN7EXAMPLE` is AWS's published documentation placeholder, the
+IBAN is the ISO example value, phone numbers are in the NANP `555-01xx` and
+Ofcom `020 7946 0xxx` reserved test ranges, the SSN is in the `666-xx-xxxx`
+block the SSA has never issued, and the email uses the reserved `.example` TLD.

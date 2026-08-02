@@ -651,17 +651,14 @@ class InMemorySink:
         return len(self.events)
 
 
-class JsonlSink(InMemorySink):
-    """Same, but also appends to a local file inside this student's folder."""
-
-    def __init__(self, path: str) -> None:
-        super().__init__()
-        self.path = path
-
-    def emit(self, event: TraceEvent) -> None:
-        super().emit(event)
-        with open(self.path, "a", encoding="utf-8") as handle:
-            handle.write(event.to_json() + "\n")
+# NOTE ON THE SAFETY MANDATE
+#     An earlier draft of this module also carried a `JsonlSink` that appended
+#     trace events to a local file. It was removed rather than kept: the
+#     assignment forbids file modifications "even inside your broken test
+#     failure instances", and it was unused dead code besides. With it gone
+#     this module touches no filesystem at all -- `InMemorySink` holds
+#     everything in a list, so the reproduction can demonstrate a full leak
+#     without a single byte being written or transmitted anywhere.
 
 
 # ==========================================================================

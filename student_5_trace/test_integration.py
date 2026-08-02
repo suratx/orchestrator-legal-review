@@ -483,6 +483,83 @@ def test_documented_false_positive_rate():
     assert redact_string("PN 12-3456789") == "PN [REDACTED:TAX_ID]"
 
 
+# ==========================================================================
+# 7. SAFETY MANDATE -- proven, not asserted
+# ==========================================================================
+#
+# "All actions interacting with external infrastructure must be mocked... even
+# inside your broken test failure instances." This layer is the one most
+# exposed to that rule, because its whole subject matter is shipping data to a
+# third-party cloud service. So the property is tested rather than promised.
+
+
+def test_no_network_traffic_during_a_traced_run(monkeypatch):
+    """The reproduction demonstrates a total PII leak without a single byte
+    leaving the process. Sockets are blocked outright; any attempt to open a
+    connection fails the test."""
+    import socket
+
+    def refuse(self, address):
+        raise AssertionError(f"network connection attempted -> {address}")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+
+    sink = InMemorySink()
+    result = _run(
+        redacted_trace_config(
+            sink,
+            entities=CLIENT_ENTITIES,
+            metadata=dict(POISONED_METADATA),
+            tags=list(POISONED_TAGS),
+        )
+    )
+
+    assert result["final_report"] is not None
+    assert len(sink) > 0
+
+
+def test_no_network_traffic_during_the_unguarded_reproduction(monkeypatch):
+    """The deliberately-broken path is held to the same standard: the 'leak'
+    goes to an in-process list, never to a real telemetry backend."""
+    import socket
+    from student_5_trace.snippet import unguarded_trace_config
+
+    def refuse(self, address):
+        raise AssertionError(f"network connection attempted -> {address}")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+
+    sink = InMemorySink()
+    _run(unguarded_trace_config(sink, metadata=dict(POISONED_METADATA)))
+
+    assert scan_for_leaks(sink, SECRET_CORPUS).unique_count == len(SECRET_CORPUS)
+
+
+def test_module_touches_no_filesystem():
+    """No sink, tracer or redactor may open a file. Guards against a future
+    'just log it to disk for debugging' change reintroducing a written copy of
+    exactly the data this layer exists to keep out of storage."""
+    import student_5_trace.snippet as trace
+
+    source = Path(trace.__file__).read_text(encoding="utf-8")
+    code = "\n".join(
+        line for line in source.splitlines() if not line.strip().startswith("#")
+    )
+
+    for forbidden in ("open(", "os.remove", "os.system", "shutil.", "subprocess"):
+        assert forbidden not in code, f"filesystem/shell primitive present: {forbidden}"
+
+
+def test_no_real_langsmith_upload_path_is_invoked():
+    """A LangSmith client is constructed so its redaction configuration can be
+    verified, never to transmit. No upload method is called anywhere."""
+    import student_5_trace.snippet as trace
+
+    source = Path(trace.__file__).read_text(encoding="utf-8")
+    for upload_call in ("create_run", "update_run", "batch_ingest", ".flush("):
+        assert upload_call not in source, f"upload call present: {upload_call}"
+
+
 def test_contract_is_untouched():
     """Contract-freeze compliance: this layer adds no state fields."""
     fields = set(AgentState.model_fields)
