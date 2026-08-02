@@ -1,44 +1,55 @@
-# Design Docs — Failure Risk Analysis
+# Design Docs — Failure-Risk Analysis
 
-**System:** Legal Contract Review Orchestrator (LangGraph, Python)
+**System:** Legal Contract Review Orchestrator  
+**Architecture:** LangGraph Coordinator with four specialized workers and two global guardrail layers  
+**Language:** Python 3.11  
+**Shared contract:** Pydantic `AgentState` defined in `contract.py`
 
-Nineteen failure risks were surveyed during architecture design. Six were
-selected for individual code-level guardrails; thirteen were considered and
-either judged covered by one of the six, or explicitly deferred with a reason.
-Full rationale, measurements and reproductions live in each owner's
-`student_*/METRICS.md`.
+## 1. Design approach
 
-## Selected guardrails (6 — one per student)
+The system was designed as a dynamically routed state machine rather than a linear prompt chain. A deterministic Coordinator examines the shared state after each worker transition and decides whether to continue, retry, roll back, report, or terminate with partial output. All workers exchange data through the frozen `AgentState` contract, which rejects undeclared fields and preserves structural consistency across the graph.
 
-| # | Failure risk | Layer | Owner | Guardrail, and the measured result |
-|---|---|---|---|---|
-| 1 | Infinite graph loops | Coordinator | P1 | `round_number >= 5` ceiling enforced in the conditional-edge function → `partial_output`; an identical rejection reason twice escalates early. Unbounded → 6 bounded iterations. |
-| 2 | Silent hallucination | Analyzer | P2 | `.with_structured_output()` **plus** source-grounding invariants in the contract — every quote, clause ID and party name must occur in `raw_input` — then one in-node self-correction. Structure alone cannot catch a hallucination, because a hallucination is structurally valid by construction. Defective analyses reaching the next agent 8/12 → 0/12. |
-| 3 | Rogue tool execution | Actor | P3 | Tool calls intercepted before execution and checked against a hardcoded permission matrix; `InvalidToolCallException` aborts the batch, no retry — a permission violation is not a transient failure. Unauthorized executions 1 → 0. |
-| 4 | Downstream cascade failure | Validator | P4 | Sanitization node between Actor and Reporter: type/shape assertions, count↔results consistency, clause-ID grounding, high/critical-only redlines. On failure sets `rejection_flag` and forces rollback. Downstream crashes 4/4 → 0/4. |
-| 5 | Data privacy leak (tracing) | Global — Tracing | P5 | Redaction interceptor on the graph→telemetry boundary covering **all four** channels (inputs/outputs, metadata, tags, error strings), keyed HMAC fingerprint for contract body, and a route audit that refuses to run while any upload path is unredacted. Fails closed everywhere. 13/13 secrets, 753 occurrences and 306 bare party short forms → 0. |
-| 6 | Context explosion / token burn | Global — Context | P5 | Context node at each loop head: five-stage pruning ladder, recounting after every stage and stopping at the first that fits. One rolling summary, stored as a fixed-schema *aggregate* so merging is addition and it stays 32 tokens at any history length. Peak window 1,803 → 1,157 tokens and ceiling breaches 4/12 → 0/12; prompt tokens at a history-consuming agent −21.2%. |
+The six assignment-defined failure modes were implemented as code-level guardrails. Nineteen additional failure risks were then evaluated to identify possible bypasses, integration failures, observability weaknesses, and limitations that could remain even when the primary guardrails operate correctly. External actions are mocked throughout the system.
 
-## Additional risks considered (13)
+## 2. Implemented guardrails
 
-| # | Failure risk | Status |
-|---|---|---|
-| 7 | Coordinator routes to an unregistered node | Mitigated — `next_route` is constrained to four `ROUTE_*` constants; LangGraph raises at build time. |
-| 8 | Out-of-order writes from concurrent branches | Deferred — the graph is strictly sequential; unreachable in v1. |
-| 9 | Valid schema but empty `analysis_payload` | Closed (P2) — `clauses` has `min_length=1` and no field has a default. Downstream must key off `is_validated`, not payload emptiness. |
-| 10 | Actor calls a real destructive tool by misconfiguration | Covered by P3's safety review — every domain tool verified mocked before integration. |
-| 11 | Validator approves an unencoded business invariant | Partially closed (P4) — structural invariants encoded; jurisdiction-specific legal rules deferred. |
-| 12 | LangSmith outage blocks the graph | Closed (P5) — the SDK uploads from a background thread, and the interceptor never raises into the graph. It refuses *before* the run instead. |
-| 13 | Redaction misses non-US PII formats | Partially closed, measured (P5) — recall 3/5 on awkward formats; an obfuscated email and a base64-wrapped key are missed. The key denylist and body fingerprint do not depend on format, and carry the bulk of the coverage. |
-| 14 | Token counter mismatched to the real tokenizer | Closed with a measurement (P5) — constants fitted from real message arrays via `/api/chat` — 2 tokens per message plus a 24-token one-off conversation prefix, and 5.77 chars/token. An earlier `/api/generate` attempt reported 25 tokens per message; that measured a one-shot template cost and wrongly multiplied it per message. |
-| 15 | Summarization drops a field the Coordinator needs | Closed (P5) — a test iterates every `AgentState` field and asserts all but `messages`/`token_count` are byte-identical after the node runs. |
-| 16 | Rejection reason oscillates without repeating identically | Known gap — §5.3 escalates only on an *identical* repeat; falls back to the `round_number` ceiling. |
-| 17 | Schema drift after the freeze | Mitigated — `extra="forbid"` rejects undeclared fields at construction. |
-| 18 | Reporter crashes while reporting a failure | Deferred — the Reporter has no guardrail of its own in v1. |
-| 19 | Two guardrails trigger in the same round | Mitigated — check order is fixed; the Actor aborts before the Coordinator's round check. |
+| # | Failure mode | Layer | Programmatic guardrail | Measured result |
+|---:|---|---|---|---|
+| 1 | Infinite graph loops | Coordinator | A deterministic `round_number` ceiling forces `partial_output` when five retry rounds are reached. Repeated identical rejection reasons escalate earlier. | An unguarded run reached the 500-iteration test-harness limit; the guarded graph terminated cleanly after five retry rounds. |
+| 2 | Silent hallucination | Analyzer | `.with_structured_output(ContractAnalysis)` enforces structure, while source-grounding invariants verify clause references, quotations, party names, and overall-risk consistency. One in-node self-correction retry is allowed before rejection. | Defective analyses reaching the Actor decreased from 8 of 12 to 0 of 12. |
+| 3 | Rogue tool execution | Actor | The complete requested tool-call array is validated against a hardcoded permission matrix before any call executes. Unauthorized tools, arguments, types, clauses, or risk levels raise `InvalidToolCallException` and abort the batch. | Unauthorized mocked executions decreased from 1 to 0 while valid mocked redlines continued to execute. |
+| 4 | Downstream cascade failure | Validator | A Validation and Sanitization Node checks required keys, data types, result cardinality, clause grounding, allowed risk levels, and `external_action_performed=False`. Invalid state is cleared and returned with a rollback flag. | Downstream crashes decreased from 4 of 4 malformed payloads to 0 of 4. |
+| 5 | Privacy leakage through telemetry | Global tracing layer | A centralized redaction interceptor sanitizes inputs, outputs, metadata, tags, and error strings. It combines sensitive-key removal, pattern matching, party-name replacement, HMAC fingerprinting, and tracing-route auditing. | Exposure decreased from 13 of 13 planted secrets, 753 occurrences, and 306 party aliases to zero. |
+| 6 | Context-window explosion | Global context layer | A Context Management Node estimates message tokens and progressively digests tool output, folds older turns into one bounded rolling summary, and reduces the recent-message window when required. | Peak context decreased from 1,803 to 1,157 tokens; threshold breaches decreased from 4 of 12 to 0 of 12; estimated prompt tokens at a history-consuming agent decreased by 21.2%. |
 
-## Open items for team review
+## 3. Nineteen additional risks considered
 
-- **#18** — give the Reporter a guardrail before final integration, or accept as out of scope? *(P1)*
-- **Loop guardrail has a hole** — `round_number` increments only inside the `rejection_flag` branch, so a node failing quietly re-routes forever with the counter stuck at 0. Fix in `CONTRACT_FREEZE_NOTES.md` §5. Related to #16. *(P2)*
-- **False positives are a real cost, not a cosmetic one** — a guardrail that cries wolf gets switched off, so both anti-hallucination and redaction publish their false-positive rates rather than tuning them away. Grounding FPs 4/10 → 0/12.
+The following risks are additional to the six required failure modes.
+
+| # | Additional risk | Design decision |
+|---:|---|---|
+| 7 | Coordinator selects an unregistered route | Route values are constrained to shared `ROUTE_*` constants, and LangGraph validates registered conditional edges during graph construction. |
+| 8 | Concurrent branches overwrite shared state out of order | Deferred because the current graph is deliberately sequential. Parallel execution would require explicit reducers, conflict-resolution rules, and concurrency tests. |
+| 9 | State-schema drift after the contract freeze | `AgentState` uses Pydantic `extra="forbid"`, so undeclared fields fail validation instead of silently entering shared state. Contract changes require documented team review. |
+| 10 | Structurally valid but empty analysis payload | `ContractAnalysis.clauses` requires at least one item, and every `ClauseRisk` field is mandatory. Downstream routing uses `is_validated` rather than payload truthiness alone. |
+| 11 | Duplicate clause identifiers | `ContractAnalysis` normalizes clause references and rejects duplicate identifiers, including differently worded labels that refer to the same section. |
+| 12 | Incorrect party-role attribution | Grounding confirms that a party name occurs in the contract but cannot always distinguish the client from the counterparty. The prompt specifies the role, while explicit party-role extraction is retained as a future enhancement. |
+| 13 | A real destructive tool is accidentally registered | The runtime registry contains only mocked functions, all results explicitly report `external_action_performed=False`, and safety tests verify that no destructive or external operation occurs. |
+| 14 | A valid call executes before a later call in the same batch is rejected | The complete tool-call array is validated before execution begins. If any request fails, the entire batch is aborted and no call is executed. |
+| 15 | An authorized tool targets an invalid clause or inappropriate risk level | Tool middleware verifies that the clause exists in the validated analysis and permits redlining only for high- or critical-risk clauses. |
+| 16 | The Validator omits an important legal business rule | Structural and cross-node invariants are encoded in the current Validator. Jurisdiction-specific legal interpretation remains outside the deterministic v1 guardrail and requires qualified human review. |
+| 17 | The Reporter fails while producing a failure report | The Reporter is deterministic and performs no external action, reducing its failure surface. A separate Reporter guardrail was considered but deferred because it is outside the six assigned failure modes. |
+| 18 | Telemetry service failure blocks graph execution | Submission tests use an in-memory telemetry sink, and tracing is isolated from operational state. A telemetry failure must not alter routing decisions or prevent the graph from producing its report. |
+| 19 | Environment-enabled tracing creates an unnoticed second upload route | The tracing-route audit detects implicitly created LangChain tracers and refuses execution when any telemetry route cannot be confirmed as redacting. |
+| 20 | Sensitive data escapes through metadata, tags, or exception messages | Redaction covers four distinct channels: inputs and outputs, metadata, tags, and error strings. Tests verify each channel separately. |
+| 21 | Redaction misses unusual formats or removes harmless identifiers | Non-standard-format recall and benign-lookalike false positives are measured explicitly. The current evaluation detected 3 of 5 difficult formats and preserved 6 of 7 benign lookalikes. |
+| 22 | The offline token estimator differs from the model tokenizer | Estimator constants were calibrated against Llama 3.2 using real `/api/chat` message arrays. The model uses a 24-token conversation prefix, two tokens per message, and approximately 5.77 characters per token. |
+| 23 | Rolling summaries accumulate and become a new source of context growth | Exactly one summary entry is retained and replaced. Its fixed-schema aggregate is merged arithmetically rather than through growing prose concatenation. |
+| 24 | Context compression removes information required by other nodes | The Context Management Node modifies only `messages` and `token_count`. Core routing, analysis, execution, rejection, and reporting fields remain unchanged and are verified through integration tests. |
+| 25 | Rejection reasons vary or oscillate, bypassing identical-reason escalation | Identical reasons escalate immediately. Non-identical or oscillating reasons remain bounded by the independent five-round Coordinator ceiling. |
+
+## 4. Final architectural decisions
+
+All six primary guardrails operate through executable validation and routing logic rather than prompt-only instructions. The Coordinator remains deterministic and LLM-free, worker outputs are validated against the frozen contract, tool execution is restricted to mocked functions, malformed downstream state is rejected before reporting, telemetry is sanitized at the graph boundary, and context is bounded before each Coordinator transition.
+
+When a trustworthy full result cannot be produced, the system fails safely by emitting `PARTIAL -- MANUAL REVIEW REQUIRED` rather than hanging, crashing, executing an unauthorized action, exposing sensitive information, or forwarding unvalidated data.
