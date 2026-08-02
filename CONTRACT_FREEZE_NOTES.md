@@ -178,8 +178,20 @@ are needed, say so now; adding them after the freeze needs a team review.
   test_redaction_does_not_mutate_the_payload_it_inspects` and
   `::test_grounding_still_works_after_a_traced_run`.
 
-  The `history_summary` question stays open for the **context/token** half
-  (`student_6_tokens/`), which is not yet built.
+  **→ Also answered for the context/token half: NO new state fields.** The
+  rolling summary lives inside `messages` as a pinned system entry, not in a
+  separate `history_summary` field, so the freeze holds for both of Person 5's
+  layers and `contract.py` is untouched.
+
+  One thing the team should know, though it needs no schema change:
+  `messages` is typed `List[Dict[str, Any]]`, so nothing constrains what a turn
+  looks like. "Prune intermediate tool outputs" is un-implementable unless a
+  turn can declare that it *is* a tool output, so `student_6_tokens/snippet.py`
+  imposes and validates its own turn schema (`v`, `turn`, `node`, `role`,
+  `kind`, `content`) on everything it appends. It stays inside the declared
+  `Dict[str, Any]` type, so this is a convention layered on top of the contract
+  rather than a change to it — but any future node that writes to `messages`
+  should use `make_turn()` so its entries remain prunable.
 
 ---
 
