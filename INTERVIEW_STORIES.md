@@ -127,19 +127,20 @@ run, 34% less egress, graph output and all 11 operational fields unchanged.
 **System:** Multi-agent legal contract review orchestrator (LangGraph, Python)
 
 I owned the context layer of a five-node LangGraph contract-review orchestrator.
-Every loop appended turns to shared state and every turn re-sent the whole
-history, so cost grew quadratically while the history grew linearly: an
-adversarial five-round review burned 17,628 input tokens with the window peaking
-at 2,880 — well past our 1,200 ceiling.
+Every loop appended turns to shared state, and any agent reading that history
+re-sends all of it, so the window grew monotonically: an adversarial five-round
+review peaked at 1,803 tokens against our 1,200 ceiling, breaching it on 4 of 12
+transitions.
 
-I built a Context Management Node at the head of each loop transition: a
-five-stage ladder that digests bulky tool outputs, folds older turns into a
-single rolling summary, then shrinks the recency window, recounting after every
-stage and stopping at the first that fits.
+I built a Context Management Node at the head of each loop: a five-stage ladder
+that digests bulky tool outputs, folds older turns into a single rolling
+summary, then shrinks the recency window, recounting after every stage and
+stopping at the first that fits.
 
-The subtle part was the summary itself. Appending one per compression would make
-the compressor the leak, so there is exactly one and it is replaced — and it
-stores a fixed-schema aggregate, not prose, so merging is addition. It measures
-64 tokens whether it has absorbed 12 turns or 192.
+The subtle part was the summary. Appending one per compression would make the
+compressor the leak, so there is exactly one and it is replaced — and it stores
+a fixed-schema aggregate rather than prose, so merging is addition. It measures
+32 tokens whether it absorbed 12 turns or 192.
 
-Cumulative burn fell 53.8%, peak window 61%, graph output unchanged.
+Peak window fell 35.8%, ceiling breaches to zero, and prompt tokens at a
+history-consuming agent 21.2%, with the graph's output unchanged.

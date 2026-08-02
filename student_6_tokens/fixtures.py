@@ -241,3 +241,50 @@ def synthetic_history(turns: int) -> List[Dict[str, Any]]:
             )
         )
     return history
+
+
+# ==========================================================================
+# 4. A HISTORY-CONSUMING AGENT
+# ==========================================================================
+#
+# The point of this stub is honesty about what is being measured.
+#
+# No production node in this repo reads `state.messages`: Person 2's Analyzer
+# builds its prompt from `raw_input`, and the Coordinator and Validator call no
+# model at all. So "tokens at every context-node visit" is a PROJECTION of what
+# a history-consuming agent would pay -- not observed spend.
+#
+# This stub closes that gap for measurement purposes. It builds its prompt from
+# the managed window exactly as a real chat agent would, and records the prompt
+# size at each of ITS invocations. Those are genuine consumer events, so the
+# figure derived from them is the defensible one.
+#
+# It is a stub, not a model call: deterministic, offline, no network.
+
+
+class HistoryConsumingAnalyzer:
+    """Analyzer that actually reads the window, and records what it read.
+
+    `prompt_tokens` accumulates one entry per invocation -- the size of the
+    prompt this agent would have sent. Sum it for the run's projected input
+    spend, measured at real consumer events rather than at every graph edge.
+    """
+
+    def __init__(self) -> None:
+        self.prompt_tokens: List[int] = []
+
+    def build_prompt(self, state: AgentState) -> List[Dict[str, Any]]:
+        """Exactly what a chat agent would send: the managed window, verbatim."""
+        return list(state.messages)
+
+    def __call__(self, state: AgentState) -> AgentState:
+        from student_6_tokens.snippet import DEFAULT_COUNTER
+
+        prompt = self.build_prompt(state)
+        self.prompt_tokens.append(DEFAULT_COUNTER.count_messages(prompt))
+
+        return analyzer_stub(state)
+
+    @property
+    def cumulative(self) -> int:
+        return sum(self.prompt_tokens)

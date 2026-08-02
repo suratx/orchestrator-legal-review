@@ -17,7 +17,7 @@ Full rationale, measurements and reproductions live in each owner's
 | 3 | Rogue tool execution | Actor | P3 | Tool calls intercepted before execution and checked against a hardcoded permission matrix; `InvalidToolCallException` aborts the batch, no retry — a permission violation is not a transient failure. Unauthorized executions 1 → 0. |
 | 4 | Downstream cascade failure | Validator | P4 | Sanitization node between Actor and Reporter: type/shape assertions, count↔results consistency, clause-ID grounding, high/critical-only redlines. On failure sets `rejection_flag` and forces rollback. Downstream crashes 4/4 → 0/4. |
 | 5 | Data privacy leak (tracing) | Global — Tracing | P5 | Redaction interceptor on the graph→telemetry boundary covering **all four** channels (inputs/outputs, metadata, tags, error strings), keyed HMAC fingerprint for contract body, and a route audit that refuses to run while any upload path is unredacted. Fails closed everywhere. 13/13 secrets and 549 occurrences → 0. |
-| 6 | Context explosion / token burn | Global — Context | P5 | Context node at each loop head: five-stage pruning ladder, recounting after every stage and stopping at the first that fits. One rolling summary, stored as a fixed-schema *aggregate* so merging is addition and it stays 64 tokens at any history length. Cumulative burn 17,628 → 8,140 (−53.8%). |
+| 6 | Context explosion / token burn | Global — Context | P5 | Context node at each loop head: five-stage pruning ladder, recounting after every stage and stopping at the first that fits. One rolling summary, stored as a fixed-schema *aggregate* so merging is addition and it stays 32 tokens at any history length. Peak window 1,803 → 1,157 tokens and ceiling breaches 4/12 → 0/12; prompt tokens at a history-consuming agent −21.2%. |
 
 ## Additional risks considered (13)
 
@@ -30,7 +30,7 @@ Full rationale, measurements and reproductions live in each owner's
 | 11 | Validator approves an unencoded business invariant | Partially closed (P4) — structural invariants encoded; jurisdiction-specific legal rules deferred. |
 | 12 | LangSmith outage blocks the graph | Closed (P5) — the SDK uploads from a background thread, and the interceptor never raises into the graph. It refuses *before* the run instead. |
 | 13 | Redaction misses non-US PII formats | Partially closed, measured (P5) — recall 3/5 on awkward formats; an obfuscated email and a base64-wrapped key are missed. The key denylist and body fingerprint do not depend on format, and carry the bulk of the coverage. |
-| 14 | Token counter mismatched to the real tokenizer | Closed with a measurement (P5) — per-message overhead is **25 tokens, not the 4 assumed**; ~5.25 chars/token. Residual error runs high on repetitive text, i.e. conservative. |
+| 14 | Token counter mismatched to the real tokenizer | Closed with a measurement (P5) — constants fitted from real message arrays via `/api/chat` — 2 tokens per message plus a 24-token one-off conversation prefix, and 5.77 chars/token. An earlier `/api/generate` attempt reported 25 tokens per message; that measured a one-shot template cost and wrongly multiplied it per message. |
 | 15 | Summarization drops a field the Coordinator needs | Closed (P5) — a test iterates every `AgentState` field and asserts all but `messages`/`token_count` are byte-identical after the node runs. |
 | 16 | Rejection reason oscillates without repeating identically | Known gap — §5.3 escalates only on an *identical* repeat; falls back to the `round_number` ceiling. |
 | 17 | Schema drift after the freeze | Mitigated — `extra="forbid"` rejects undeclared fields at construction. |
@@ -41,8 +41,4 @@ Full rationale, measurements and reproductions live in each owner's
 
 - **#18** — give the Reporter a guardrail before final integration, or accept as out of scope? *(P1)*
 - **Loop guardrail has a hole** — `round_number` increments only inside the `rejection_flag` branch, so a node failing quietly re-routes forever with the counter stuck at 0. Fix in `CONTRACT_FREEZE_NOTES.md` §5. Related to #16. *(P2)*
-- **A guardrail can have a second, unverified path** — the implicit LangSmith tracer was one: a redacting callback looked clean while unredacted state uploaded in parallel. Worth checking #10 and #17 for the same shape. *(P5)*
-- **Canonical vs. colloquial identifiers** — redacting full legal names still left 234 bare short-form references. Any allow/denylist keyed on a canonical name should be checked against the aliases the domain actually uses, including P3's tool matrix. *(P5)*
-- **Frozen fields nobody writes** — `messages` and `token_count` sat unwritten from day one. The freeze reviewed field *shapes*, never field *producers*; worth one pass over `contract.py`. *(P5)*
-- **Our constants are guessed, not measured** — the token overhead was 6× off until measured. `MAX_ROUNDS`, `MIN_QUOTE_CHARS`, `MAX_ANALYZER_RETRIES` and `MAX_CONTEXT_TOKENS` have never been checked against anything. *(P5)*
-- **False positives are a real cost, not a cosmetic one** — a guardrail that cries wolf gets switched off. Grounding FPs 4/10 → 0/12 (P2); redaction FPs published at 1/7 rather than tuned away (P5).
+- **False positives are a real cost, not a cosmetic one** — a guardrail that cries wolf gets switched off, so both anti-hallucination and redaction publish their false-positive rates rather than tuning them away. Grounding FPs 4/10 → 0/12.
