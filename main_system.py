@@ -11,6 +11,11 @@ Active guardrails wired here:
   - Person 2: Analyzer (optional; requires Ollama — default stub for CI)
   - Person 3: Actor tool-permission middleware
   - Person 4: Validator sanitization + rejection_flag rollback
+  - Person 5: State Redaction Interceptor on every telemetry channel
+
+Person 5's layer is not a node. It attaches at invoke time via
+`redacted_trace_config()`, which also audits for a second, implicitly-created
+tracing route and refuses to run while one would upload in the clear.
 """
 
 from __future__ import annotations
@@ -27,6 +32,13 @@ from contract import (
 from student_1_loop.snippet import coordinator_node, route_after_coordinator
 from student_3_rogue.snippet import actor_node
 from student_4_cascade.snippet import validator_node
+from student_5_trace.snippet import InMemorySink, redacted_trace_config
+
+#: Party names known from deployment configuration rather than from the
+#: payload. The counter-party is discoverable (`analysis_payload.counterparty`
+#: names it by definition); our own client's name is not, so it is configured.
+#: Override at deploy time with the TRACE_REDACT_ENTITIES env var.
+CLIENT_ENTITIES = ("Acme Corporation",)
 
 # --------------------------------------------------------------------------
 # STUB WORKER NODES (offline / CI placeholders)
@@ -179,5 +191,15 @@ if __name__ == "__main__":
             "limitation."
         )
     )
-    result = app.invoke(initial_state, config={"recursion_limit": 50})
+
+    # Person 5's guardrail, active. The sink stands in for LangSmith when no
+    # API key is configured; when ambient tracing IS enabled, this same call
+    # installs the redacting client so the implicit upload route is closed too.
+    telemetry = InMemorySink()
+    result = app.invoke(
+        initial_state,
+        config=redacted_trace_config(telemetry, entities=CLIENT_ENTITIES),
+    )
+
     print(result["final_report"])
+    print(f"\n[telemetry] {len(telemetry)} trace events emitted, redacted.")

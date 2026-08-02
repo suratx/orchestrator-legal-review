@@ -110,11 +110,12 @@ model, so `pytest` passes with Ollama stopped.
 python main_system.py
 
 # Everything
-pytest -v                                  # 31 tests
+pytest -v                                  # 85 tests
 
 # One person's failure-mode reproduction + metrics table
 python student_1_loop/test_failure.py      # infinite loop
 python student_2_silent/test_failure.py    # silent hallucination
+python student_5_trace/test_failure.py     # PII/secret leak to telemetry
 
 # Live measurement against the real model (needs ollama serve)
 python student_2_silent/benchmark_live.py --runs 12
@@ -132,7 +133,7 @@ Five people, six failure modes — Person 5 owns two.
 | 2 | Person 2 | Worker A — Analyzer | **Silent hallucination** | `.with_structured_output()` + source-grounding invariants + 1 retry | [`student_2_silent/`](student_2_silent/) |
 | 3 | Person 3 | Worker B — Actor | Rogue tool execution | Permission matrix + `InvalidToolCallException` | [`student_3_rogue/`](student_3_rogue/) |
 | 4 | Person 4 | Worker C — Validator | Downstream cascade failure | Sanitization node + rejection flag + rollback | [`student_4_cascade/`](student_4_cascade/) |
-| 5 | Person 5 | Global — Tracing | Data privacy leak | Redaction interceptor before LangSmith export | [`student_5_trace/`](student_5_trace/) |
+| 5 | Person 5 | Global — Tracing | Data privacy leak | Redaction interceptor on all four telemetry channels + tracing-route audit | [`student_5_trace/`](student_5_trace/) |
 | 6 | Person 5 | Global — Context | Context window explosion | Token-threshold summarization + pruning | [`student_6_tokens/`](student_6_tokens/) |
 
 Person 1 also owns the architecture, the Reporter node, and integration into
