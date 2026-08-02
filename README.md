@@ -110,15 +110,17 @@ model, so `pytest` passes with Ollama stopped.
 python main_system.py
 
 # Everything
-pytest -v                                  # 85 tests
+pytest -v                                  # 120 tests
 
 # One person's failure-mode reproduction + metrics table
 python student_1_loop/test_failure.py      # infinite loop
 python student_2_silent/test_failure.py    # silent hallucination
 python student_5_trace/test_failure.py     # PII/secret leak to telemetry
+python student_6_tokens/test_failure.py    # context explosion / token burn
 
 # Live measurement against the real model (needs ollama serve)
 python student_2_silent/benchmark_live.py --runs 12
+python student_6_tokens/calibrate_tokens.py       # token counter vs real llama3.2
 ```
 
 ---
@@ -134,7 +136,7 @@ Five people, six failure modes — Person 5 owns two.
 | 3 | Person 3 | Worker B — Actor | Rogue tool execution | Permission matrix + `InvalidToolCallException` | [`student_3_rogue/`](student_3_rogue/) |
 | 4 | Person 4 | Worker C — Validator | Downstream cascade failure | Sanitization node + rejection flag + rollback | [`student_4_cascade/`](student_4_cascade/) |
 | 5 | Person 5 | Global — Tracing | Data privacy leak | Redaction interceptor on all four telemetry channels + tracing-route audit | [`student_5_trace/`](student_5_trace/) |
-| 6 | Person 5 | Global — Context | Context window explosion | Token-threshold summarization + pruning | [`student_6_tokens/`](student_6_tokens/) |
+| 6 | Person 5 | Global — Context | Context window explosion | Context Management Node: token-threshold ladder + bounded rolling summary | [`student_6_tokens/`](student_6_tokens/) |
 
 Person 1 also owns the architecture, the Reporter node, and integration into
 `main_system.py`. Person 2 owns `contract.py` and this README. Person 3 leads

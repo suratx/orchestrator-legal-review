@@ -33,6 +33,7 @@ from student_1_loop.snippet import coordinator_node, route_after_coordinator
 from student_3_rogue.snippet import actor_node
 from student_4_cascade.snippet import validator_node
 from student_5_trace.snippet import InMemorySink, redacted_trace_config
+from student_6_tokens.snippet import context_manager_node, with_turn_recording
 
 #: Party names known from deployment configuration rather than from the
 #: payload. The counter-party is discoverable (`analysis_payload.counterparty`
@@ -143,22 +144,41 @@ def build_graph(
     analyzer=analyzer_stub,
     actor=actor_node,
     validator=validator_node,
+    context_manager=context_manager_node,
+    record_history: bool = True,
 ):
     """Assembles the graph from injectable node callables so tests can swap
     in adversarial stand-ins without duplicating the wiring.
 
-    Defaults wire Person 3's Actor and Person 4's Validator. Analyzer defaults
-    to the offline stub (Person 2's live node needs Ollama).
+    Defaults wire Person 3's Actor, Person 4's Validator and Person 5's Context
+    Manager. Analyzer defaults to the offline stub (Person 2's live node needs
+    Ollama).
+
+    Person 5's context layer enters here in two places:
+      - `record_history` wraps each worker so the GRAPH appends that worker's
+        turn to `state.messages`. No teammate's node has to know history
+        exists. Applied identically however the graph is configured, so a
+        guarded/unguarded comparison differs in exactly one variable.
+      - `context_manager` runs at the head of every loop transition, bounding
+        the window before the Coordinator routes. Injecting
+        `context_manager_NO_GUARDRAIL` reproduces the token-burn failure with
+        the same history producer still in place.
     """
     graph = StateGraph(AgentState)
 
-    graph.add_node("coordinator", coordinator_node)
-    graph.add_node("analyzer", analyzer)
-    graph.add_node("actor", actor)
-    graph.add_node("validator", validator)
-    graph.add_node("reporter", reporter_node)
+    wrap = with_turn_recording if record_history else (lambda node, _name: node)
 
-    graph.set_entry_point("coordinator")
+    graph.add_node("context_manager", context_manager)
+    graph.add_node("coordinator", wrap(coordinator_node, "coordinator"))
+    graph.add_node("analyzer", wrap(analyzer, "analyzer"))
+    graph.add_node("actor", wrap(actor, "actor"))
+    graph.add_node("validator", wrap(validator, "validator"))
+    graph.add_node("reporter", wrap(reporter_node, "reporter"))
+
+    # The context manager is the entry point and the return path for every
+    # loop, so no worker can hand the model a window it has not bounded.
+    graph.set_entry_point("context_manager")
+    graph.add_edge("context_manager", "coordinator")
 
     graph.add_conditional_edges(
         "coordinator",
@@ -171,9 +191,9 @@ def build_graph(
         },
     )
 
-    graph.add_edge("analyzer", "coordinator")
+    graph.add_edge("analyzer", "context_manager")
     graph.add_edge("actor", "validator")
-    graph.add_edge("validator", "coordinator")
+    graph.add_edge("validator", "context_manager")
     graph.add_edge("reporter", END)
 
     return graph.compile()

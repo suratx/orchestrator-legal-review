@@ -126,7 +126,20 @@ run, 34% less egress, graph output and all 11 operational fields unchanged.
 **Role:** Global Graph Layer — Context Manager
 **System:** Multi-agent legal contract review orchestrator (LangGraph, Python)
 
-TODO: `student_6_tokens/` — the context/token blowup reproduced, the
-summarization + pruning guardrail, and the quantified before/after metric
-(e.g. "token spend per failure event: $4.50 → $0.12"). Not yet started; the
-tracing guardrail above is complete and measured.
+I owned the context layer of a five-node LangGraph contract-review orchestrator.
+Every loop appended turns to shared state and every turn re-sent the whole
+history, so cost grew quadratically while the history grew linearly: an
+adversarial five-round review burned 17,628 input tokens with the window peaking
+at 2,880 — well past our 1,200 ceiling.
+
+I built a Context Management Node at the head of each loop transition: a
+five-stage ladder that digests bulky tool outputs, folds older turns into a
+single rolling summary, then shrinks the recency window, recounting after every
+stage and stopping at the first that fits.
+
+The subtle part was the summary itself. Appending one per compression would make
+the compressor the leak, so there is exactly one and it is replaced — and it
+stores a fixed-schema aggregate, not prose, so merging is addition. It measures
+64 tokens whether it has absorbed 12 turns or 192.
+
+Cumulative burn fell 53.8%, peak window 61%, graph output unchanged.
