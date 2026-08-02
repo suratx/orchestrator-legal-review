@@ -40,6 +40,7 @@ from student_6_tokens.snippet import (
     SummaryAggregate,
     compress_history,
     context_manager_NO_GUARDRAIL,
+    make_context_manager,
     context_manager_node,
     describe_turns,
     is_summary,
@@ -174,17 +175,22 @@ def test_tool_outputs_are_pruned_before_anything_else():
       (b) when that stage alone reaches the target, the digests survive in the
           window and nothing further is pruned.
     """
-    for limit in (1550, 1400, 1200, 900):
+    history = synthetic_history(24)
+    raw = DEFAULT_COUNTER.count_messages(history)
+
+    # Limits expressed as fractions of the real size, so recalibrating the
+    # token constants cannot silently invalidate this test.
+    for limit in (int(raw * f) for f in (0.95, 0.8, 0.6, 0.4)):
         _, _, stages = compress_history(synthetic_history(24), max_tokens=limit)
         assert stages[0] == "digest_tool_outputs", (
             f"at limit {limit} the ladder began with {stages[0]!r}"
         )
 
-    compressed, tokens, stages = compress_history(
-        synthetic_history(24), max_tokens=1550
-    )
+    # A limit just under the raw size is reachable by stage 1 alone.
+    gentle = int(raw * 0.95)
+    compressed, tokens, stages = compress_history(history, max_tokens=gentle)
     assert stages == ["digest_tool_outputs"], "pruned further than necessary"
-    assert tokens <= 1550
+    assert tokens <= gentle
     assert [
         m for m in compressed
         if m.get("kind") == KIND_TOOL_OUTPUT and "chars pruned" in m["content"]
@@ -307,7 +313,10 @@ def test_the_rolling_summary_is_still_redacted_before_telemetry():
         analyzer=analyzer_stub,
         actor=actor_stub,
         validator=make_varying_validator(),
-        context_manager=context_manager_node,
+        # Explicit tight budget so the run definitely reaches the summarization
+        # stage -- the point of this test is that a SUMMARY gets redacted, so
+        # it must not depend on the default ceiling happening to be low enough.
+        context_manager=make_context_manager(max_tokens=400),
     )
     result = app.invoke(
         initial_state(),
@@ -354,3 +363,70 @@ def test_module_touches_no_filesystem_or_shell():
     )
     for forbidden in ("open(", "os.remove", "os.system", "shutil.", "subprocess"):
         assert forbidden not in code, f"filesystem/shell primitive present: {forbidden}"
+
+
+# ==========================================================================
+# 7. REGRESSIONS FROM REVIEW
+# ==========================================================================
+
+
+def test_turn_ids_stay_unique_and_increasing_across_compression():
+    """Regression: turn ids were assigned as `len(messages)`.
+
+    After compression the list is short but the retained entries carry high
+    ids -- a 4-entry window holding turns 0, 47, 48, 49 -- so length-based
+    numbering restarted at 4 and produced duplicate, non-chronological ids for
+    everything appended afterwards. Ordering is what the window and the summary
+    are keyed on, so a collision there is silent corruption.
+    """
+    from student_6_tokens.snippet import next_turn_id
+
+    compressed, _, _ = compress_history(synthetic_history(48), max_tokens=300)
+    state = AgentState(raw_input="x", messages=compressed)
+
+    highest_before = max(int(m["turn"]) for m in compressed)
+    result = with_turn_recording(analyzer_stub, "analyzer")(state)
+
+    appended = [int(m["turn"]) for m in result.messages[len(compressed):]]
+    assert appended, "wrapper appended nothing"
+    assert min(appended) > highest_before, (
+        f"appended {appended} collides with retained ids (max {highest_before})"
+    )
+
+    ids = [int(m["turn"]) for m in result.messages]
+    assert len(ids) == len(set(ids)), f"duplicate turn ids: {ids}"
+    assert next_turn_id(result.messages) > max(ids)
+
+
+def test_recency_turns_zero_keeps_nothing_verbatim():
+    """Regression: `body[:-0]` is `body[:0]`, i.e. empty -- so a plain slice
+    silently inverted the head/tail split and skipped the first two stages
+    entirely whenever recency_turns was 0."""
+    history = synthetic_history(24)
+    compressed, tokens, stages = compress_history(
+        history, max_tokens=200, recency_turns=0
+    )
+
+    assert stages, "no compression happened at all"
+    assert tokens == DEFAULT_COUNTER.count_messages(compressed)
+    # only pinned entries survive when nothing is kept verbatim
+    assert all(m.get("kind") in (KIND_SYSTEM, KIND_SUMMARY) for m in compressed)
+
+
+def test_over_budget_condition_is_visible_in_state():
+    """Regression: `floor_reached` was logged but never surfaced, so nothing
+    reading state could tell that the window is over budget."""
+    state = AgentState(raw_input="x", messages=synthetic_history(40))
+    result = context_manager_node(state, max_tokens=5)
+
+    markers = [m for m in result.messages if m.get("over_budget")]
+    assert markers, "over-budget condition is invisible outside the log"
+    assert "CONTEXT BUDGET EXCEEDED" in markers[0]["content"]
+    assert result.token_count == DEFAULT_COUNTER.count_messages(result.messages)
+
+
+def test_configurable_budget_reaches_the_deeper_stages():
+    node = make_context_manager(max_tokens=300)
+    state = AgentState(raw_input="x", messages=synthetic_history(48))
+
+    assert node(state).token_count <= 300

@@ -144,41 +144,57 @@ def is_summary(entry: Dict[str, Any]) -> bool:
 # 2. TOKEN ACCOUNTING
 # ==========================================================================
 #
-# WHAT `state.token_count` MEANS -- stated precisely, because an ambiguous
-# metric is an unusable one:
+# WHAT `state.token_count` MEANS -- stated precisely, and stated HONESTLY,
+# because an overclaimed metric is worse than an ambiguous one:
 #
-#     token_count = the number of tokens in `state.messages` AFTER this node
-#                   has run, i.e. exactly what the NEXT model call will pay to
-#                   read the history.
+#     token_count = the estimated number of tokens in `state.messages` AFTER
+#                   this node has run. It is the size of the managed window.
 #
-# It is a *window size*, not a running total. Cumulative burn across a whole
-# run is the sum of that value at every turn, which is what actually costs
-# money -- but it is a property of the run, not of the state, and the contract
-# is frozen, so the harness measures it rather than storing it.
+# What it is NOT, in this system as currently built:
+#
+#     It is NOT "what the next model call pays". No worker feeds
+#     `state.messages` to a model -- Person 2's Analyzer builds its prompt from
+#     `raw_input`, and the Coordinator and Validator are deterministic and call
+#     no model at all. A context-node visit is therefore not the same event as
+#     an LLM invocation.
+#
+# So the run-level figure this layer reports is a PROJECTION: what a
+# history-consuming agent would pay if one were wired in. `fixtures.py` ships
+# `history_consuming_analyzer_stub`, which does read the window, so the
+# projection can also be measured at genuine consumer invocations rather than
+# at every graph transition. Both numbers are reported separately in METRICS.md
+# and neither is labelled as observed spend on the current agents.
 
-#: MEASURED, not assumed. `calibrate_tokens.py` puts llama3.2's chat-template
-#: scaffolding (BOS marker plus role headers) at 25 tokens per message -- more
-#: than six times the 4 this estimator originally guessed. In a window made of
-#: many short turns that fixed cost dominates the content entirely, so guessing
-#: it low is exactly how a token budget silently overruns.
-PER_MESSAGE_OVERHEAD_TOKENS = 25
+#: FITTED from llama3.2 via /api/chat with real message ARRAYS -- see
+#: `calibrate_tokens.py`. Three constants, because a chat prompt has three
+#: cost components and collapsing them misprices the window:
+#:
+#:   tokens ≈ CONVERSATION_OVERHEAD          (once per window)
+#:          + PER_MESSAGE_OVERHEAD × messages (role header per turn)
+#:          + characters / CHARS_PER_TOKEN    (the content itself)
+#:
+#: An earlier version of the calibration posted a single joined string to
+#: /api/generate, measured the template cost ONCE, and then applied that figure
+#: to every message. That put per-message overhead at 25 tokens. The correct
+#: experiment -- vary the message count in a real array and take the SLOPE --
+#: puts it at 2, with the remaining ~24 being a one-off conversation prefix.
+#: The old method overpriced a 35-turn window by roughly 800 tokens.
+CONVERSATION_OVERHEAD_TOKENS = 24
+PER_MESSAGE_OVERHEAD_TOKENS = 2
 
 
 class HeuristicTokenCounter:
-    """Offline token estimator: ~4 characters per token.
+    """Offline token estimator with constants fitted against llama3.2.
 
-    Deliberately dependency-free so the guardrail, its tests and its metrics
-    run with no model server and no tokenizer package. Both constants come
-    from `calibrate_tokens.py`, which measures the error against the model
-    itself rather than assuming it is small.
-
-    Residual error drifts HIGH on repetitive text, where BPE merges repeated
-    phrases this estimator counts as fresh. That bias is conservative --
-    compressing slightly early is the safe direction for a cost guardrail.
+    Dependency-free on purpose, so the guardrail, its tests and its metrics run
+    with no model server and no tokenizer package. `calibrate_tokens.py` fits
+    the constants and reports the delta against whatever is in this file; it
+    imports nothing from here before fitting, so it cannot measure its own
+    assumption.
     """
 
-    #: Measured: llama3.2 averages ~5.25 characters per token on contract prose.
-    chars_per_token: float = 5.25
+    #: Fitted: ~5.77 characters per token on contract prose.
+    chars_per_token: float = 5.77
 
     def count_text(self, text: str) -> int:
         if not text:
@@ -186,17 +202,23 @@ class HeuristicTokenCounter:
         return max(1, math.ceil(len(text) / self.chars_per_token))
 
     def count_message(self, entry: Dict[str, Any]) -> int:
-        framing = " ".join(
-            str(entry.get(key, "")) for key in ("role", "kind", "node")
-        )
+        """Content plus this turn's role header.
+
+        The `role`/`kind`/`node` framing is NOT counted separately: the fitted
+        per-message slope already includes the role header the template emits,
+        and adding it again would double-count.
+        """
         return (
             self.count_text(str(entry.get("content", "")))
-            + self.count_text(framing)
             + PER_MESSAGE_OVERHEAD_TOKENS
         )
 
     def count_messages(self, messages: Sequence[Dict[str, Any]]) -> int:
-        return sum(self.count_message(entry) for entry in messages)
+        if not messages:
+            return 0
+        return CONVERSATION_OVERHEAD_TOKENS + sum(
+            self.count_message(entry) for entry in messages
+        )
 
 
 DEFAULT_COUNTER = HeuristicTokenCounter()
@@ -375,6 +397,19 @@ def _digest(text: str, limit: int) -> str:
     return f"{text[:limit].rstrip()}... [+{len(text) - limit} chars pruned]"
 
 
+def next_turn_id(messages: Sequence[Dict[str, Any]]) -> int:
+    """One past the highest turn id present.
+
+    NOT `len(messages)`. After compression the list is short but the retained
+    entries carry high ids -- a 10-entry window can hold turns 25..34 -- so
+    length-based numbering restarts at 10 and produces duplicate,
+    non-chronological ids for everything appended afterwards. Turn ids are how
+    the summary and the window are ordered, so collisions there are silent
+    corruption rather than cosmetic.
+    """
+    return max((int(m.get("turn", -1)) for m in messages), default=-1) + 1
+
+
 def _split(messages: Sequence[Dict[str, Any]]):
     pinned = [m for m in messages if is_pinned(m) and not is_summary(m)]
     summary = next((m for m in messages if is_summary(m)), None)
@@ -415,10 +450,15 @@ def compress_history(
     aggregate = SummaryAggregate.from_dict(
         (summary or {}).get("aggregate")
     )
-    next_turn = max((int(m.get("turn", 0)) for m in working), default=0) + 1
+    next_turn = next_turn_id(working)
 
     # --- Stage 1: digest bulky tool outputs outside the recency window ------
-    head, tail = body[:-recency_turns], body[-recency_turns:] if recency_turns else (body, [])
+    # `body[:-0]` is `body[:0]` == [], so a plain slice silently inverts the
+    # split when recency_turns is 0. Branch explicitly.
+    if recency_turns > 0:
+        head, tail = body[:-recency_turns], body[-recency_turns:]
+    else:
+        head, tail = list(body), []
     changed = False
     for entry in head:
         if entry.get("kind") == KIND_TOOL_OUTPUT and len(entry["content"]) > TOOL_DIGEST_CHARS:
@@ -487,7 +527,12 @@ def compress_history(
     return working, total, stages
 
 
-def context_manager_node(state: AgentState) -> AgentState:
+def context_manager_node(
+    state: AgentState,
+    *,
+    max_tokens: int = MAX_CONTEXT_TOKENS,
+    recency_turns: int = RECENCY_TURNS,
+) -> AgentState:
     """LangGraph node. Bounds the window, then updates `token_count`.
 
     Touches ONLY `messages` and `token_count`. Every routing and payload field
@@ -497,7 +542,33 @@ def context_manager_node(state: AgentState) -> AgentState:
     """
     state = state.model_copy(deep=True)
 
-    messages, tokens, stages = compress_history(state.messages)
+    messages, tokens, stages = compress_history(
+        state.messages, max_tokens=max_tokens, recency_turns=recency_turns
+    )
+
+    if "floor_reached" in stages:
+        # Visible in state, not just in a log line. The contract is frozen so
+        # there is no field to set -- but `messages` is this layer's own, and a
+        # pinned marker means the condition survives into telemetry and is
+        # inspectable by anything reading state. It does NOT reroute the graph:
+        # deciding that an over-budget window warrants partial output is a
+        # policy call for the Coordinator's owner, not this node's to take
+        # unilaterally. Recorded as an open item instead.
+        messages = messages + [
+            make_turn(
+                node="context_manager",
+                role=ROLE_SYSTEM,
+                kind=KIND_SYSTEM,
+                turn=next_turn_id(messages),
+                content=(
+                    f"CONTEXT BUDGET EXCEEDED: minimum safe window is {tokens} "
+                    f"tokens against a target of {max_tokens}. Compression is "
+                    "exhausted; proceeding rather than discarding core context."
+                ),
+                over_budget=True,
+            )
+        ]
+        tokens = DEFAULT_COUNTER.count_messages(messages)
 
     if stages:
         logger.info(
@@ -510,6 +581,28 @@ def context_manager_node(state: AgentState) -> AgentState:
     state.messages = messages
     state.token_count = tokens
     return state
+
+
+def make_context_manager(
+    *,
+    max_tokens: int = MAX_CONTEXT_TOKENS,
+    recency_turns: int = RECENCY_TURNS,
+) -> Callable[[AgentState], AgentState]:
+    """Build a context node with an explicit budget.
+
+    The ceiling is a deployment policy, not a law of nature -- it should track
+    the model's window and the operator's cost appetite. Exposing it here keeps
+    it out of module-global state and lets tests exercise the deeper stages of
+    the ladder without depending on the default happening to be tight enough.
+    """
+
+    def node(state: AgentState) -> AgentState:
+        return context_manager_node(
+            state, max_tokens=max_tokens, recency_turns=recency_turns
+        )
+
+    node.__name__ = f"context_manager_{max_tokens}"
+    return node
 
 
 def context_manager_NO_GUARDRAIL(state: AgentState) -> AgentState:
@@ -660,8 +753,7 @@ def with_turn_recording(
 
     def wrapped(state: AgentState) -> AgentState:
         result = node(state)
-        next_turn = len(result.messages)
-        additions = describe_turns(name, result, next_turn)
+        additions = describe_turns(name, result, next_turn_id(result.messages))
         if additions:
             result = result.model_copy(deep=True)
             result.messages = list(result.messages) + additions

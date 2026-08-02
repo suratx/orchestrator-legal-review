@@ -1,267 +1,257 @@
 # Person 5 Metrics — Context Window Explosion & Token Burn
 
 **Guardrail:** Context Management Node at the head of every loop transition
-**Measured by:** `python student_6_tokens/test_failure.py` and
-`pytest student_6_tokens/ -q` (25 tests). Every number is produced by running
-the real compiled LangGraph — no estimates.
+**Reproduce:** `python student_6_tokens/benchmark.py` (all numbers below),
+`python student_6_tokens/test_failure.py` (before/after narrative),
+`pytest student_6_tokens/ -q` (29 tests).
 
 ---
+
+## Read this first: what is measured, and what is projected
+
+**No production node in this repository reads `state.messages`.** Person 2's
+Analyzer builds its prompt from `raw_input`; the Coordinator and Validator are
+deterministic and call no model at all. A context-node visit is therefore *not*
+the same event as an LLM invocation.
+
+That means "tokens at every graph transition" is a **projection**, not observed
+spend, and it is labelled as such everywhere below. Two figures are reported
+because they answer different questions:
+
+| | What it is | Status |
+|---|---|---|
+| **(a)** Managed-window estimate summed over all graph transitions | What the window would cost if every transition fed history to a model | **Projection** |
+| **(b)** Prompt tokens at a history-consuming agent's invocations | Measured at a stub (`HistoryConsumingAnalyzer`) that genuinely builds its prompt from the window | **The defensible figure** |
 
 ## Method, and why the comparison is fair
 
-Both runs use **the same history producer**. `with_turn_recording()` wraps every
-worker in `build_graph`, so turns are appended by the graph identically in both
-cases. The *only* variable is which callable is injected as the context node:
+Both runs use the same history producer: `with_turn_recording()` wraps every
+worker in `build_graph`, identically in both cases. The only variable is which
+callable is injected as the context node — `context_manager_NO_GUARDRAIL`
+(counts, prunes nothing) or `context_manager_node`. `test_both_runs_do_identical_work`
+asserts both runs invoke the workers the same number of times.
 
-| | Context node | History producer |
-|---|---|---|
-| Unguarded | `context_manager_NO_GUARDRAIL` — counts, prunes nothing | identical wrappers |
-| Guarded | `context_manager_node` — counts, prunes, summarizes | identical wrappers |
-
-Verified by `test_both_runs_do_identical_work`, which asserts both runs invoke
-the workers the same number of times (`analyzer` ×6, `actor` ×5, `validator` ×5).
-If the two sides built their histories differently, the numbers below would be
-comparing two workloads rather than measuring one guardrail.
-
-### The round count is honest
-
-The obvious way to force a long run is an always-rejecting Validator. **It does
-not work**, and the reason is a guardrail rather than a bug: Person 1's
-Coordinator escalates straight to `partial_output` when the same rejection
-reason repeats (ARCHITECTURE_DESIGN.md §5.3), so a repetitive Validator ends the
-graph after **one** round.
-
-The fix is to make the Validator behave like a real one — a different defect each
-pass — so §5.3 correctly does not fire and the run reaches Person 1's
-`MAX_ROUNDS` ceiling of 5. **`MAX_ROUNDS` was not raised and no teammate's
-guardrail was disabled to produce a longer demo.** Five rounds is the system
-working as designed, and measuring inside that bound is the point.
+**The round count is honest.** An always-rejecting Validator does *not* produce
+a long run: Person 1's §5.3 rule escalates to `partial_output` when the same
+rejection reason repeats, ending the graph after **one** round. The Validator
+varies its reason instead — which is also what a real one does. `MAX_ROUNDS` was
+not raised and no teammate's guardrail was disabled.
 
 ---
 
-## Headline: before / after
+## Results
 
 | Metric | Without guardrail | With guardrail |
 |---|---:|---:|
-| **Peak context window** | **2,880 tokens** | **1,122 tokens** (−61.0%) |
-| **Cumulative input tokens** | **17,628** | **8,140** (−53.8%) |
-| Final history length | 35 turns | 10 turns |
-| Windows breaching the 1,200 ceiling | 7 of 12 | **0 of 12** |
-| Latency per run | 14.17 ms | **13.41 ms** (−0.76 ms) |
-| Rounds executed | 5 | 5 |
+| **Peak managed window** | **1,803 tokens** | **1,157** (−35.8%) |
+| Windows breaching the 1,200 ceiling | 4 of 12 | **0 of 12** |
+| **(b) Prompt tokens at consumer invocations** | **5,319** | **4,193** (−21.2%) |
+| (a) Window estimate across all transitions *(projection)* | 11,136 | 8,884 (−20.2%) |
 | Graph outcome (`final_report`) | identical | identical |
 
 Window size at each of the 12 context-node visits:
 
 ```
-unguarded  58  220  590  752 1122 1284 1654 1816 2186 2348 2718 2880   ← only grows
-guarded    58  220  590  752 1122 1021  515  677 1047  946  515  677   ← sawtooth
+unguarded  53 148 384 479 715 810 1046 1141 1377 1472 1708 1803   ← only grows
+guarded    53 148 384 479 715 810 1046 1141  897  992 1062 1157   ← sawtooth
 ```
 
-The unguarded series is monotonically increasing — history is never compacted,
-so it can only grow. The guarded series saws: it climbs, hits the ceiling,
-compresses, and climbs again. **No guarded window ever exceeds 1,200.**
+Prompt size at the six history-consuming agent invocations:
 
-### Why cumulative burn is the real number
+```
+unguarded  59 390 721 1052 1383 1714
+guarded    59 390 721 1052  903 1068
+```
 
-Peak window is what breaks the model. **Cumulative burn is what costs money**,
-and it is the sum of the window at every turn — because turn N re-sends turns
-1..N all over again. History grows linearly; spend grows quadratically. Reporting
-only the final history length (35 → 10 turns) would describe the symptom and
-miss the cost.
+The unguarded series only grows — history is never compacted. The guarded series
+climbs, hits the ceiling, compresses, climbs again.
 
-### The guardrail is not a latency tax
+### Latency: no claim
 
-It is a small latency *saving*: −0.76 ms per run. Compression costs CPU, but a
-smaller window means less state to copy and serialize on every subsequent hop,
-and that dominates. On a live model path the effect is far larger, since input
-tokens drive prefill time directly.
+| | Median | IQR |
+|---|---:|---|
+| Unguarded | 14.04 ms | 13.81–14.33 |
+| Guarded | 14.10 ms | 13.94–14.38 |
+
+Delta **+0.07 ms**, well inside the interquartile range over 60 timed runs after
+5 warm-ups. **This is noise, and no latency effect is claimed.** An earlier draft
+reported a "−0.76 ms saving" from a handful of untimed runs; that figure was not
+reproducible and has been withdrawn.
+
+### Cost: projected, not observed
+
+The team's model is local Ollama, which is free. Applying a hosted-API input
+rate of **$R per 1M tokens** to figure (b):
+
+| | Per 1,000 reviews | At $2.50/1M (illustrative) |
+|---|---:|---:|
+| Without guardrail | 5.32M tokens | $13.30 |
+| With guardrail | 4.19M tokens | $10.48 |
+| **Saved** | **1.13M tokens** | **$2.82** |
+
+**Substitute your provider's current published rate** — the dollar column is an
+illustration applied to measured token counts, not a bill anyone received and
+not a quotation of any vendor's live pricing. The token column is the real
+result.
 
 ---
 
-## Cost projection
+## Node-level scaling *(projection)*
 
-The team's model is local Ollama, which is free, so a dollar figure has to be
-constructed honestly rather than observed. **These are measured token counts
-priced at a published hosted-API input rate of $2.50 per 1M tokens** — what this
-same workload would cost on a commercial API, not a bill anyone received.
+The graph stops at 5 rounds by design, so the figures above are bounded by that
+ceiling. Running the compressor directly over synthetic histories shows what it
+does to longer ones:
 
-| | Per review | Per 1,000 reviews | Per 100,000 reviews |
-|---|---:|---:|---:|
-| Without guardrail | $0.0441 | $44.07 | $4,407 |
-| With guardrail | $0.0204 | $20.35 | $2,035 |
-| **Saved** | **$0.0237** | **$23.72** | **$2,372** |
-
----
-
-## Node-level scaling study *(projection — not an in-graph measurement)*
-
-The graph stops at 5 rounds by design, so the in-graph numbers above are bounded
-by that ceiling. To show what the same node does to longer histories, the
-compressor is run directly over synthetic histories. **Labelled a projection
-everywhere it appears and never blended with the measured numbers.**
-
-| History turns | Unguarded window | Guarded window | Reduction |
+| History turns | Unguarded | Guarded | Reduction |
 |---:|---:|---:|---:|
-| 6 | 446 | 446 | 0.0% *(below threshold — no-op)* |
-| 12 | 834 | 834 | 0.0% *(below threshold — no-op)* |
-| 24 | 1,610 | 381 | 76.3% |
-| 48 | 3,162 | 381 | 88.0% |
-| 96 | 6,266 | 381 | **93.9%** |
+| 6 | 251 | 251 | 0.0% *(below threshold — no-op)* |
+| 12 | 450 | 450 | 0.0% *(no-op)* |
+| 24 | 852 | 852 | 0.0% *(no-op)* |
+| 48 | 1,656 | 219 | 86.8% |
+| 96 | 3,264 | 219 | **93.3%** |
 
-The guarded column **flatlines at 381 tokens** regardless of how much history
-arrives. That constant is the whole design: unguarded growth is O(n), guarded is
-O(1). It also shows the node correctly doing *nothing* below the threshold — a
-guardrail that fires on every turn is one that gets switched off.
+The guarded column **flatlines at 219 tokens** regardless of input size:
+unguarded growth is O(n), guarded is O(1). It also shows the node correctly
+doing nothing below the threshold.
 
 ---
 
 ## The rolling summary is bounded by construction
 
-There is exactly **one** summary entry and it is **replaced**, never appended.
-Appending would make the compressor the thing that blows the window.
+Exactly **one** summary entry, **replaced** rather than appended — otherwise the
+compressor becomes the leak. Replacement alone is insufficient: prose would
+still concatenate on each merge. The summary carries a **fixed-schema aggregate**
+and merging is addition.
 
-Replacement alone is not sufficient, though. If the summary were prose, merging
-"old summary + newly evicted turns" would concatenate and the single entry would
-still grow without bound. So the summary carries a **fixed-schema aggregate**
-(counts, worst risk, latest rejection) and merging is *addition*:
+| History turns | 12 | 24 | 48 | 96 | 192 |
+|---|---:|---:|---:|---:|---:|
+| Summary size (tokens) | 32 | 32 | 32 | 32 | **32** |
 
-```
-old aggregate  +  aggregate(newly evicted turns)  →  one updated aggregate
-```
+Exactly constant across a 16× range. Enforced by
+`test_summary_size_does_not_grow_with_history_length`.
 
-Same keys, same size, no matter how many turns have been folded in.
-
-| History turns | Summary size (tokens) |
-|---:|---:|
-| 12 | 64 |
-| 24 | 64 |
-| 48 | 64 |
-| 96 | 64 |
-| 192 | **64** |
-
-Measured, not asserted: the summary is **exactly constant** across a 16× range of
-history length. Enforced by `test_summary_size_does_not_grow_with_history_length`,
-which fails if the spread exceeds 12 tokens — so the property is held in place
-even if someone later adds a field to the aggregate.
+**What the summary does not keep:** individual clause identifiers and the
+reasoning behind each earlier decision. That is acceptable here because the
+graph carries `analysis_payload`, `execution_state` and
+`rejection_reason_history` as structured state alongside the window — the
+summary is not the system's memory, only the conversational part of it. Note the
+limit of the evidence: `test_compression_does_not_change_the_outcome` proves the
+*deterministic* graph reaches the same result, and cannot prove an LLM would
+reason equally well from the compressed window, because no production node
+consumes it yet.
 
 ---
 
-## The pruning ladder — cheapest loss first, recount after every stage
+## The pruning ladder
 
-| Stage | Action | Rationale |
-|---|---|---|
-| 1 | Digest tool outputs outside the recency window | Bulkiest and least reusable — the assignment names them specifically |
-| 2 | Fold older turns into the single rolling summary | Retains the facts, drops the prose |
-| 3 | Shrink the recency window one turn at a time | Recency is the last thing worth losing |
-| 4 | Digest the single retained turn | Structure survives, detail does not |
-| 5 | Truncate the summary itself | Last resort |
+| Stage | Action |
+|---|---|
+| 1 | Digest tool outputs outside the recency window |
+| 2 | Fold older turns into the single rolling summary |
+| 3 | Shrink the recency window one turn at a time |
+| 4 | Digest the single retained turn |
+| 5 | Truncate the summary itself |
 
-**The node recounts after every stage and stops at the first one that reaches the
-target** — never pruning more than necessary, since lost context is a real cost.
-Verified by `test_ladder_stops_at_the_first_stage_that_reaches_the_target`.
+**Recounts after every stage and stops at the first that fits** — never pruning
+more than necessary, since lost context is a real cost.
 
-### When compression cannot reach the target
+### The ceiling is best-effort, not guaranteed
 
-Pinned system turns plus one retained turn can still exceed a small ceiling. The
-ladder then hits a **deterministic floor**: it logs, emits `floor_reached`, and
-returns. It does not loop and does not empty the window. An over-budget window is
-a cost problem; an empty one is a correctness problem, and this layer must not
-trade the second for the first. Verified by
-`test_fallback_ladder_terminates_when_the_target_is_unreachable`.
+Stated precisely: **the guardrail holds tested workloads under the target, and
+applies best-effort bounded compression when the minimum safe window itself
+exceeds it.** Pinned instructions plus one retained turn can exceed a small
+budget; the ladder then stops at a deterministic floor rather than looping or
+emptying the window. An over-budget window is a cost problem; an empty one is a
+correctness problem.
+
+When that happens the node now **writes a pinned `over_budget` marker into
+`messages`**, so the condition is visible in state and in telemetry rather than
+only in a log line. It deliberately does **not** reroute the graph: deciding
+that an over-budget window warrants partial output is a policy call for the
+Coordinator's owner, not this node's to take unilaterally. Flagged as an open
+item for the team.
 
 ---
 
 ## What `token_count` means
 
-Stated precisely, because an ambiguous metric is an unusable one:
+> **`token_count` = the estimated token size of `state.messages` after this node
+> runs — the size of the managed window.**
 
-> **`token_count` = the number of tokens in `state.messages` *after* the context
-> node runs — exactly what the next model call pays to read the history.**
-
-It is a **window size**, not a running total, so it can and does go *down* after
-compression. Cumulative burn is a property of the run rather than of the state,
-so the harness sums it; the contract is frozen and this layer adds no fields.
-Both properties are asserted in `test_token_count_means_the_current_window_not_a_running_total`.
+It is a window size, not a running total, so it goes *down* after compression.
+It is **not** "what the next model call pays" in this system, for the reason at
+the top of this document.
 
 ---
 
-## Tokenizer calibration — closing `DESIGN_DOCS.md` risk #14
+## Tokenizer calibration — `DESIGN_DOCS.md` risk #14
 
-Risk #14 was open and assigned to Person 5: *"Token counter under/over-counts due
-to tokenizer mismatch with the actual LLM."* It is now closed with a measurement.
-`calibrate_tokens.py` asks llama3.2 itself, via Ollama's `prompt_eval_count`.
+`calibrate_tokens.py` fits the estimator's constants against llama3.2 through
+Ollama's `/api/chat`, then reports the delta against whatever is in the code.
+Nothing is imported from `snippet.py` before the fit, so the script cannot
+measure its own assumption.
 
-**Method note:** `prompt_eval_count` includes the model's chat template — BOS
-marker and role headers — a fixed cost independent of the text. The first run
-appeared to show an 81% estimator error on a 22-character string; that was
-scaffolding, not error. Measuring the baseline once and subtracting it makes the
-comparison content-only.
+| Constant | Fitted | Method |
+|---|---:|---|
+| Conversation overhead | 24 tokens (once) | intercept of tokens vs. message count |
+| Per-message overhead | 2.00 tokens | **slope** of tokens vs. message count |
+| Characters per token | 5.77 | slope of tokens vs. content length |
 
-| Sample | Heuristic | Actual | Error |
-|---|---:|---:|---:|
-| Short routing turn | 6 | 7 | −14.3% |
-| Clause quote | 34 | 25 | +36.0% |
-| Full contract | 163 | 134 | +21.6% |
-| History ×6 | 305 | 233 | +30.9% |
-| History ×24 | 1,107 | 845 | +31.0% |
-| History ×96 | 4,320 | 3,293 | +31.2% |
+### Correction: the earlier calibration was wrong
 
-**Two findings, both applied to the code:**
+An earlier version of this file reported per-message overhead as **25 tokens**.
+That figure came from posting a single joined string to `/api/generate`,
+measuring the template cost once, and then applying it to every message.
+`/api/generate` takes one prompt string, so the template is applied **once** — a
+cost measured once cannot be multiplied by message count.
 
-1. **Per-message overhead is 25 tokens, not the 4 the estimator assumed** — more
-   than six times higher. In a window made of many short turns that fixed cost
-   dominates the content entirely, and guessing it low is exactly how a token
-   budget silently overruns. `PER_MESSAGE_OVERHEAD_TOKENS` is now set from the
-   measurement.
-2. **llama3.2 averages ~5.25 characters per token**, not 4. `chars_per_token`
-   updated accordingly.
+The corrected experiment varies the message count in a real array via
+`/api/chat` and takes the **slope**: **2 tokens per message**, with the
+remaining ~24 being a one-off conversation prefix. The old method overpriced a
+35-turn window by roughly 800 tokens, which is why the headline reduction in the
+earlier draft (53.8%) was inflated; the corrected figure is 21.2%.
 
-Residual error after calibration drifts **high** on repetitive text (~+31%),
-where BPE merges repeated phrases the estimator counts as fresh. **That bias is
-conservative:** it compresses slightly earlier than strictly necessary, which is
-the safe direction for a cost guardrail. The remaining exposure is the opposite
-case — many very short turns, where the estimate runs ~14% low.
-
-`calibrate_tokens.py` is live and opt-in, never imported by the test suite —
-the same pattern Person 2 established with `benchmark_live.py`. `pytest` stays
-fully offline.
+The earlier claim that "both numbers are measured, not guessed" was also wrong
+for the chars-per-token coefficient: the old script imported a counter with 5.25
+already hardcoded and could only compare against it. It is now fitted (5.77).
 
 ---
 
-## Core state preservation
+## Core state preservation and contract compliance
 
-The assignment requires "preserving the system's core state values." The node
-touches **only** `messages` and `token_count`;
-`test_context_node_touches_only_messages_and_token_count` asserts every other
-field on `AgentState` is byte-identical after the node runs, and
-`test_compression_does_not_change_the_outcome` asserts the guarded and unguarded
-runs produce the same `final_report`, `round_number`, `rejection_reason_history`,
-`analysis_payload` and `validation_notes`.
+The node touches **only** `messages` and `token_count`.
+`test_context_node_touches_only_messages_and_token_count` iterates every other
+field on `AgentState` and asserts byte-identity.
 
-### Contract-freeze compliance
+**No new state fields** — the rolling summary lives inside `messages` as a
+pinned system entry, answering the context half of `CONTRACT_FREEZE_NOTES.md` §7.
 
-**No new state fields.** That answers the open question in
-`CONTRACT_FREEZE_NOTES.md` §7 for the context half of Person 5's scope: the
-rolling summary lives inside `messages` as a pinned system entry rather than in a
-separate `history_summary` field, so the freeze holds.
+`AgentState.messages` is typed `List[Dict[str, Any]]`, so nothing constrained a
+turn's shape — and "prune intermediate tool outputs" is unimplementable unless a
+turn can declare that it *is* one. This layer imposes and validates its own turn
+schema inside that declared type. Anything writing to `messages` should use
+`make_turn()` so its entries stay prunable.
 
-`AgentState.messages` was typed loosely (`List[Dict[str, Any]]`), which means the
-pruning policy had nothing to reason about — "prune intermediate tool outputs" is
-only implementable if a turn can declare that it *is* a tool output. This layer
-therefore imposes its own turn schema (`v`, `turn`, `node`, `role`, `kind`,
-`content`) and validates every appended entry. A malformed turn raises rather
-than sitting un-prunable in the window forever.
+---
+
+## Bugs found in review and fixed
+
+| Bug | Consequence | Regression test |
+|---|---|---|
+| Turn ids assigned as `len(messages)` | After compression a 4-entry window holding turns 0/47/48/49 restarted numbering at 4 — duplicate, non-chronological ids | `test_turn_ids_stay_unique_and_increasing_across_compression` |
+| `body[:-recency_turns]` with `recency_turns=0` | `body[:-0]` is `body[:0]`, i.e. empty — the head/tail split silently inverted and skipped stages 1 and 2 | `test_recency_turns_zero_keeps_nothing_verbatim` |
+| `floor_reached` logged only | Nothing reading state could tell the window was over budget | `test_over_budget_condition_is_visible_in_state` |
+| Hardcoded token thresholds in tests | Recalibrating the constants silently invalidated two tests | limits now derived as fractions of measured size |
 
 ---
 
 ## Composition with the tracing layer
 
-The rolling summary is **new text manufactured out of PII-bearing state** — it
-did not exist when the redaction rules were written, so it is a genuinely new
-carrier. `test_the_rolling_summary_is_still_redacted_before_telemetry` runs the
-graph with both guardrails active and confirms a summarized history reaches the
-telemetry sink with zero party-name leaks.
+The rolling summary is new text manufactured from PII-bearing state — a carrier
+that did not exist when the redaction rules were written.
+`test_the_rolling_summary_is_still_redacted_before_telemetry` runs the graph
+with both guardrails active and an explicit tight budget (so the summarization
+stage definitely fires) and confirms zero party-name leaks.
 
 ---
 
@@ -272,14 +262,9 @@ telemetry sink with zero party-name leaks.
 | No network traffic | `test_no_network_traffic_during_compression` — `socket.connect` raises; the run still completes |
 | No file modifications | `test_module_touches_no_filesystem_or_shell` |
 
-`calibrate_tokens.py` is the one component that talks to anything, and it talks
-only to a local Ollama server, writes nothing, performs no destructive action,
-and is never imported by tests.
-
----
-
-## Test summary
+`calibrate_tokens.py` is the only component that talks to anything; it reaches a
+local Ollama server, writes nothing, and is never imported by tests.
 
 ```
-pytest student_6_tokens/ -q   ->  25 passed
+pytest student_6_tokens/ -q   ->  29 passed
 ```
