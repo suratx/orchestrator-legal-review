@@ -96,6 +96,41 @@ issues.
   the rate moves silently. Same reasoning as Person 2's grounding false
   positives below — a guardrail that cries wolf is a guardrail that gets
   disabled.
+- **New risk surfaced during implementation (Person 5) — frozen fields that
+  nothing writes:** `AgentState.messages` and `token_count` were in the frozen
+  contract from day one, and **no node ever wrote to either**. That is worse
+  than not having the fields: downstream code cannot distinguish "empty because
+  nothing happened yet" from "empty because nobody implements this," and the
+  contract advertises a capability the system does not have. It went unnoticed
+  because nothing consumed them either — the gap only appeared when a layer
+  finally needed to. Closed for these two by `with_turn_recording()`, but the
+  **general question is for the whole team**: the freeze reviewed field
+  *shapes*, never field *producers*. Worth one pass over `contract.py` asking
+  "which node writes this, and which reads it?" for every field, and recording
+  the answer next to the field.
+- **New risk surfaced during implementation (Person 5) — `Dict[str, Any]` state
+  fields cannot carry a guardrail's invariants:** `messages` is typed
+  `List[Dict[str, Any]]`, so nothing constrained what a turn looked like — and
+  "prune intermediate tool outputs" is un-implementable unless a turn can
+  declare that it *is* a tool output. `analysis_payload` has exactly the same
+  shape and Person 2 hit exactly the same wall, solving it with the
+  `ContractAnalysis.model_dump()` convention. Two independent layers reaching
+  for the same workaround suggests the pattern, not the instance, is the issue.
+  Both are now conventions layered *on top of* the frozen type rather than
+  changes to it — but a convention is only as good as the next person who reads
+  it, so anyone writing to `messages` should use `make_turn()` and anyone
+  writing `analysis_payload` should use `ContractAnalysis`. Worth deciding at
+  v2 whether these should be typed properly.
+- **New risk surfaced during implementation (Person 5) — our constants are
+  guessed, not measured:** the token estimator assumed 4 tokens of per-message
+  overhead. Measured against llama3.2 it is **25** — six times off, and for a
+  window of many short turns that error dominates the content entirely. It was
+  invisible until somebody asked the model. The same question applies to every
+  other magic number in the system, none of which has been measured against
+  anything: `MAX_ROUNDS = 5`, `MIN_QUOTE_CHARS = 20`, `MAX_ANALYZER_RETRIES = 1`,
+  `MAX_CONTEXT_TOKENS = 1200`. They may all be fine — the point is that nobody
+  knows, and a guardrail threshold that is wrong in the permissive direction
+  fails silently by design.
 - **Grounding false positives (Person 2):** an anti-hallucination check that
   cries wolf gets switched off, so it is a real risk, not a cosmetic one.
   Live llama3.2 output substitutes typographic apostrophes and stray JSON
