@@ -80,8 +80,6 @@ Detailed interfaces and routing rules are documented in [`ARCHITECTURE_DESIGN.md
 
 The assignment defines six technical workstreams. Our five-person team divided those workstreams as shown below, with one team member owning both global safety layers.
 
-Replace the bracketed placeholders with the contributors’ full names before submission.
-
 | Team member | Assignment responsibility | Primary contributions |
 |---|---|---|
 | **Ali Sura Ozdemir** | Coordinator and integration | Designed the orchestration architecture, implemented the Coordinator loop guardrail, integrated the graph in `main_system.py`, implemented the Reporter path, and supported final integration |
