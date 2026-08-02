@@ -68,15 +68,19 @@ climbs, hits the ceiling, compresses, climbs again.
 
 ### Latency: no claim
 
-| | Median | IQR |
-|---|---:|---|
-| Unguarded | 14.04 ms | 13.81–14.33 |
-| Guarded | 14.10 ms | 13.94–14.38 |
+Both runs land at a median of **~14 ms**, with an interquartile range of roughly
+0.4–0.7 ms over 60 timed runs after 5 warm-ups.
 
-Delta **+0.07 ms**, well inside the interquartile range over 60 timed runs after
-5 warm-ups. **This is noise, and no latency effect is claimed.** An earlier draft
-reported a "−0.76 ms saving" from a handful of untimed runs; that figure was not
-reproducible and has been withdrawn.
+**No latency effect is claimed.** The guarded-minus-unguarded delta measured
+**+0.07, +0.14, +0.18 and +0.27 ms** on four independent executions — an order
+of magnitude smaller than the spread within a single run, and not stable between
+runs. That instability *is* the finding: if the effect were real the delta would
+reproduce, and it does not. Re-run `benchmark.py` and you will get a different
+number in the same range.
+
+Two earlier figures have been withdrawn for the same reason. A first draft
+reported a "−0.76 ms saving" from untimed runs; a later one published "+0.07 ms"
+as though it were a stable measurement. Neither survived repetition.
 
 ### Cost: projected, not observed
 
