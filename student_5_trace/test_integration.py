@@ -28,6 +28,7 @@ from student_5_trace.fixtures import (
     POISONED_METADATA,
     POISONED_TAGS,
     SECRET_CORPUS,
+    SHORT_FORM_CORPUS,
     poisoned_analyzer_stub,
     poisoned_initial_state,
 )
@@ -41,8 +42,12 @@ from student_5_trace.snippet import (
     assert_all_routes_redacted,
     audit_tracing_routes,
     build_redacting_client,
+    count_standalone_occurrences,
+    derive_short_forms,
+    expand_entities,
     fingerprint,
     install_redacted_tracing,
+    parse_defined_short_forms,
     redact_payload,
     redact_string,
     redacted_trace_config,
@@ -308,6 +313,81 @@ def test_a_foreign_callback_handler_is_flagged(clean_tracing_env):
 
     with pytest.raises(UnredactedTracingRouteError):
         assert_all_routes_redacted([SomeoneElsesTracer()])
+
+
+# ==========================================================================
+# 4b. SHORT FORMS OF PARTY NAMES
+# ==========================================================================
+#
+# Redacting the full legal name alone leaves the party identified everywhere
+# the contract uses its defined short form -- which, after the opening
+# paragraph, is everywhere that matters.
+
+
+def test_short_forms_are_derived_from_legal_names():
+    assert derive_short_forms("Globex Industries Ltd") == [
+        "Globex Industries",
+        "Globex",
+    ]
+    assert derive_short_forms("Acme Corporation") == ["Acme"]
+    assert derive_short_forms("Initech LLC") == ["Initech"]
+    # a generic leading token is skipped in favour of the distinctive one
+    assert "Boeing" in derive_short_forms("The Boeing Company")
+    # dropping the suffix must not leave dangling punctuation
+    assert "Wayne Enterprises" in derive_short_forms("Wayne Enterprises, Inc.")
+
+
+def test_derivation_refuses_generic_short_forms():
+    """Over-redaction is its own failure. A party called 'First National Bank'
+    must not cause the word 'First' to be blanked out of every trace."""
+    assert derive_short_forms("First National Bank") == []
+    assert parse_defined_short_forms('X Ltd (the "Company") and Y (the "Bank")') == []
+
+
+def test_contract_defined_short_forms_are_parsed():
+    """More reliable than guessing, and catches aliases no derivation rule
+    would produce -- a code name, an acronym, a trading name."""
+    assert set(parse_defined_short_forms(poisoned_initial_state().raw_input)) == {
+        "Acme",
+        "Globex",
+    }
+
+
+def test_bare_short_forms_are_redacted_in_a_real_graph_run():
+    """The regression this closes: 'Globex breached its duty to Acme' is
+    capitalised prose. No key marks it, no pattern matches it."""
+    sink = InMemorySink()
+    _run(redacted_trace_config(sink, entities=CLIENT_ENTITIES))
+    blob = sink.as_json()
+
+    for short_form, full_name in SHORT_FORM_CORPUS:
+        assert count_standalone_occurrences(blob, short_form, full_name) == 0, (
+            f"bare short form {short_form!r} survived into telemetry"
+        )
+
+
+def test_short_forms_do_leak_without_the_guardrail():
+    """Confirms the gap was real rather than hypothetical."""
+    from student_5_trace.snippet import unguarded_trace_config
+
+    sink = InMemorySink()
+    _run(unguarded_trace_config(sink))
+    blob = sink.as_json()
+
+    assert all(
+        count_standalone_occurrences(blob, short, full) > 0
+        for short, full in SHORT_FORM_CORPUS
+    )
+
+
+def test_short_form_redaction_does_not_eat_ordinary_prose():
+    """The cost side: only the configured/derived parties are replaced."""
+    text = "Acme escalated the matter to an arbitrator in Delaware on 2026-08-01."
+    redacted = redact_string(text, expand_entities(["Acme Corporation"]))
+
+    assert "[REDACTED:PARTY]" in redacted
+    assert "arbitrator in Delaware" in redacted
+    assert "2026-08-01" in redacted
 
 
 # ==========================================================================
