@@ -36,38 +36,33 @@ fail loudly and stop, never to fail quietly and continue.
 ## Architecture
 
 ```
-                  ┌──────────────────────────────┐
-                  ▼                              │ (Loop / Self-Correction)
-               [ 0. Coordinator Node ] ──────────┼──────────────┐
-                  │              ▲               │              │
-                  │ (Route A)    │ (Error Flag)  │ (Route B)    │ (Route C)
-                  ▼              │               ▼              ▼
-     [ 1. Worker A: Analyzer ] ──┘     [ 2. Worker B: Actor ]   [ 4. Worker D: Reporter ]
-                  │                              │
-                  │ (Valid Schema)               │ (Execution State)
-                  ▼                              ▼
-     [ 5. Worker C: Validator ] ◄────────────────┘
+                      ┌──────────────────────────────────────────────┐
+                      ▼                                              │ (Loop / Self-Correction)
+ entry ──► [ Context Manager ] ──► [ 0. Coordinator Node ] ──────────┤
+             global layer #6           │          │          │       │
+                      ▲                │ (Route A)│ (Route B)│ (Route C)
+                      │                ▼          ▼          ▼
+                      │   [ Worker A: Analyzer ]  [ Worker B: Actor ]  [ Worker D: Reporter ]
+                      │                │          │                            │
+                      │  (Error Flag)  │          │ (Execution State)          ▼
+                      │                │          ▼                           END
+                      │                │   [ Worker C: Validator ]
+                      └────────────────┴──────────┘
+                         both return through the Context Manager
+
+ ── global layer #5 ──────────────────────────────────────────────────────────
+ every state transition above ──► [ Redaction Interceptor ] ──► telemetry
 ```
 
 Not a linear pipeline: every worker returns control to the Coordinator, which
 reads state flags and decides whether to go forward, roll back, or stop. That
 single choke point is what makes a deterministic loop guardrail possible.
 
-The two **global layers** are not workers, so they do not appear above. This is
-where they actually attach in `main_system.py`:
-
-```
- entry ──► [ Context Manager ] ──► [ Coordinator ] ──► workers ──┐
-                  ▲                                              │
-                  └──────────────  analyzer / validator  ◄────────┘
-
- every node transition ──► [ Redaction Interceptor ] ──► telemetry
-```
-
-The Context Manager (#6) runs at the head of every loop transition, so no worker
-can hand the model a window it has not bounded. The Redaction Interceptor (#5)
-sits on the graph→telemetry boundary rather than inside any node, so it covers
-all six nodes — and any node added later — by construction.
+The two global layers are not workers. The **Context Manager** (#6) sits at the
+head of every loop transition, so no worker can hand the model a context window
+it has not bounded. The **Redaction Interceptor** (#5) sits on the
+graph→telemetry boundary rather than inside any node, so it covers all six
+nodes — and any node added later — by construction.
 
 Full topology, node interfaces and routing/retry/rollback rules:
 [`ARCHITECTURE_DESIGN.md`](ARCHITECTURE_DESIGN.md).
