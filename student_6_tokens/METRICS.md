@@ -1,274 +1,349 @@
-# Person 5 Metrics — Context Window Explosion & Token Burn
+# Student 6 Metrics — Context-Window Explosion and Token Burn
 
-**Guardrail:** Context Management Node at the head of every loop transition
-**Reproduce:** `python student_6_tokens/benchmark.py` (all numbers below),
-`python student_6_tokens/test_failure.py` (before/after narrative),
-`pytest student_6_tokens/ -q` (29 tests).
+## Evaluation overview
 
----
+**Guardrail:** Context Management Node at the beginning of each loop transition
 
-## Read this first: what is measured, and what is projected
+**Reproduction commands:**
 
-**No production node in this repository reads `state.messages`.** Person 2's
-Analyzer builds its prompt from `raw_input`; the Coordinator and Validator are
-deterministic and call no model at all. A context-node visit is therefore *not*
-the same event as an LLM invocation.
+```bash
+python student_6_tokens/benchmark.py
+python student_6_tokens/test_failure.py
+pytest student_6_tokens/ -q
+```
 
-That means "tokens at every graph transition" is a **projection**, not observed
-spend, and it is labelled as such everywhere below. Two figures are reported
-because they answer different questions:
+The Context Management Node limits the growth of `state.messages` as the graph moves through repeated rounds of analysis, action, validation, and routing. It estimates the current context size and applies progressive compression when the configured 1,200-token threshold is exceeded.
 
-| | What it is | Status |
+The evaluation compares two executions of the same integrated graph:
+
+- The unguarded configuration records and counts history without compressing it.
+- The guarded configuration uses the same history producer but activates context compression.
+
+Both executions use the same input, worker implementations, routing behavior, and five-round limit. The only difference is whether context compression is active. Tests confirm that both configurations invoke the workers the same number of times and produce identical operational results.
+
+## Measurement scope
+
+No production node in the current repository sends `state.messages` to a language model. The Analyzer builds its prompt from `raw_input`, while the Coordinator and Validator are deterministic. Therefore, context size at every graph transition represents a managed-window measurement rather than actual billed model usage.
+
+Two token measurements are reported:
+
+| Measurement | Meaning | Status |
 |---|---|---|
-| **(a)** Managed-window estimate summed over all graph transitions | What the window would cost if every transition fed history to a model | **Projection** |
-| **(b)** Prompt tokens at a history-consuming agent's invocations | Measured at a stub (`HistoryConsumingAnalyzer`) that genuinely builds its prompt from the window | **The defensible figure** |
+| Managed-window estimate across graph transitions | Estimated context size at every Context Management Node visit | Projection |
+| Prompt estimate at history-consuming agent invocations | Estimated prompt size when a deterministic consumer builds its prompt from `state.messages` | Consumer-level estimate |
 
-## Method, and why the comparison is fair
+`HistoryConsumingAnalyzer` is used to measure the second value. It receives the managed history at each Analyzer invocation and records the estimated size of the prompt it would submit. It remains deterministic and offline and does not call an external model.
 
-Both runs use the same history producer: `with_turn_recording()` wraps every
-worker in `build_graph`, identically in both cases. The only variable is which
-callable is injected as the context node — `context_manager_NO_GUARDRAIL`
-(counts, prunes nothing) or `context_manager_node`. `test_both_runs_do_identical_work`
-asserts both runs invoke the workers the same number of times.
-
-**The round count is honest.** An always-rejecting Validator does *not* produce
-a long run: Person 1's §5.3 rule escalates to `partial_output` when the same
-rejection reason repeats, ending the graph after **one** round. The Validator
-varies its reason instead — which is also what a real one does. `MAX_ROUNDS` was
-not raised and no teammate's guardrail was disabled.
-
----
-
-## Results
+## Before-and-after results
 
 | Metric | Without guardrail | With guardrail |
 |---|---:|---:|
-| **Peak managed window** | **1,803 tokens** | **1,157** (−35.8%) |
-| Windows breaching the 1,200 ceiling | 4 of 12 | **0 of 12** |
-| **(b) Prompt tokens at consumer invocations** | **5,319** | **4,193** (−21.2%) |
-| (a) Window estimate across all transitions *(projection)* | 11,136 | 8,884 (−20.2%) |
-| Graph outcome (`final_report`) | identical | identical |
+| **Peak managed window** | **1,803 tokens** | **1,157 tokens** |
+| Peak-window reduction | — | **35.8%** |
+| Windows exceeding the 1,200-token threshold | 4 of 12 | **0 of 12** |
+| **Estimated prompt tokens at consumer invocations** | **5,319** | **4,193** |
+| Estimated prompt-token reduction | — | **21.2%** |
+| Projected window total across all transitions | 11,136 | 8,884 |
+| Projected transition-level reduction | — | 20.2% |
+| Rounds executed | 5 | 5 |
+| Final graph output | Baseline | Identical to baseline |
 
-Window size at each of the 12 context-node visits:
+The guardrail kept every tested managed window below the 1,200-token target and preserved the graph’s final output.
 
+## Window growth across graph transitions
+
+Estimated window size at each of the 12 Context Management Node visits:
+
+```text
+Without guardrail:
+53, 148, 384, 479, 715, 810, 1,046, 1,141, 1,377, 1,472, 1,708, 1,803
+
+With guardrail:
+53, 148, 384, 479, 715, 810, 1,046, 1,141, 897, 992, 1,062, 1,157
 ```
-unguarded  53 148 384 479 715 810 1046 1141 1377 1472 1708 1803   ← only grows
-guarded    53 148 384 479 715 810 1046 1141  897  992 1062 1157   ← sawtooth
+
+Without compression, the context grows monotonically and does not recover after crossing the threshold. With the guardrail active, the context is compressed when necessary and remains below the target.
+
+## Prompt estimates at consumer invocations
+
+Estimated prompt size at the six invocations of the history-consuming Analyzer:
+
+```text
+Without guardrail:
+59, 390, 721, 1,052, 1,383, 1,714
+
+With guardrail:
+59, 390, 721, 1,052, 903, 1,068
 ```
 
-Prompt size at the six history-consuming agent invocations:
+The guarded and unguarded values remain identical while the history is below the threshold. Once compression becomes necessary, the guarded prompt estimate decreases while the unguarded estimate continues to grow.
 
+The total estimated prompt size decreases from 5,319 to 4,193 tokens, representing a 21.2% reduction for the tested five-round workload.
+
+## History production
+
+The original graph state includes `messages`, but the Worker nodes do not write to it directly. History is produced centrally using `with_turn_recording()`, which wraps each graph component without modifying the individual files owned by other students.
+
+Each recorded turn follows a validated structure:
+
+```python
+{
+    "v": 1,
+    "turn": 7,
+    "node": "actor",
+    "role": "tool",
+    "kind": "tool_output",
+    "content": "TOOL propose_redline -> ..."
+}
 ```
-unguarded  59 390 721 1052 1383 1714
-guarded    59 390 721 1052  903 1068
-```
 
-The unguarded series only grows — history is never compacted. The guarded series
-climbs, hits the ceiling, compresses, climbs again.
+The required fields are:
 
-### Latency: no claim
+- `v`
+- `turn`
+- `node`
+- `role`
+- `kind`
+- `content`
 
-Both runs land at a median of **~14 ms**, with an interquartile range of roughly
-0.4–0.7 ms over 60 timed runs after 5 warm-ups.
+The `kind` field identifies whether an entry represents analysis, routing, validation, a tool output, a report, a system instruction, or a rolling summary. This allows the context manager to apply different retention priorities to different message types.
 
-**No latency effect is claimed.** The guarded-minus-unguarded delta measured
-**+0.07, +0.14, +0.18 and +0.27 ms** on four independent executions — an order
-of magnitude smaller than the spread within a single run, and not stable between
-runs. That instability *is* the finding: if the effect were real the delta would
-reproduce, and it does not. Re-run `benchmark.py` and you will get a different
-number in the same range.
+Malformed history entries are rejected rather than retained in an unmanageable form.
 
-Two earlier figures have been withdrawn for the same reason. A first draft
-reported a "−0.76 ms saving" from untimed runs; a later one published "+0.07 ms"
-as though it were a stable measurement. Neither survived repetition.
+## Context Management Node
 
-### Cost: projected, not observed
+The Context Management Node runs before the Coordinator enters or re-enters a routing cycle. It reads `messages`, estimates the current token count, and updates only:
 
-The team's model is local Ollama, which is free. Applying a hosted-API input
-rate of **$R per 1M tokens** to figure (b):
+- `messages`
+- `token_count`
 
-| | Per 1,000 reviews | At $2.50/1M (illustrative) |
-|---|---:|---:|
-| Without guardrail | 5.32M tokens | $13.30 |
-| With guardrail | 4.19M tokens | $10.48 |
-| **Saved** | **1.13M tokens** | **$2.82** |
+When the context remains below 1,200 tokens, the node performs no compression. When the threshold is exceeded, it applies a five-stage pruning process.
 
-**Substitute your provider's current published rate** — the dollar column is an
-illustration applied to measured token counts, not a bill anyone received and
-not a quotation of any vendor's live pricing. The token column is the real
-result.
+## Pruning process
 
----
-
-## Node-level scaling *(projection)*
-
-The graph stops at 5 rounds by design, so the figures above are bounded by that
-ceiling. Running the compressor directly over synthetic histories shows what it
-does to longer ones:
-
-| History turns | Unguarded | Guarded | Reduction |
-|---:|---:|---:|---:|
-| 6 | 251 | 251 | 0.0% *(below threshold — no-op)* |
-| 12 | 450 | 450 | 0.0% *(no-op)* |
-| 24 | 852 | 852 | 0.0% *(no-op)* |
-| 48 | 1,656 | 219 | 86.8% |
-| 96 | 3,264 | 219 | **93.3%** |
-
-The guarded column **flatlines at 219 tokens** regardless of input size:
-unguarded growth is O(n), guarded is O(1). It also shows the node correctly
-doing nothing below the threshold.
-
----
-
-## The rolling summary is bounded by construction
-
-Exactly **one** summary entry, **replaced** rather than appended — otherwise the
-compressor becomes the leak. Replacement alone is insufficient: prose would
-still concatenate on each merge. The summary carries a **fixed-schema aggregate**
-and merging is addition.
-
-| History turns | 12 | 24 | 48 | 96 | 192 |
-|---|---:|---:|---:|---:|---:|
-| Summary size (tokens) | 32 | 32 | 32 | 32 | **32** |
-
-Exactly constant across a 16× range. Enforced by
-`test_summary_size_does_not_grow_with_history_length`.
-
-**What the summary does not keep:** individual clause identifiers and the
-reasoning behind each earlier decision. That is acceptable here because the
-graph carries `analysis_payload`, `execution_state` and
-`rejection_reason_history` as structured state alongside the window — the
-summary is not the system's memory, only the conversational part of it. Note the
-limit of the evidence: `test_compression_does_not_change_the_outcome` proves the
-*deterministic* graph reaches the same result, and cannot prove an LLM would
-reason equally well from the compressed window, because no production node
-consumes it yet.
-
----
-
-## The pruning ladder
-
-| Stage | Action |
-|---|---|
-| 1 | Digest tool outputs outside the recency window |
-| 2 | Fold older turns into the single rolling summary |
-| 3 | Shrink the recency window one turn at a time |
-| 4 | Digest the single retained turn |
-| 5 | Truncate the summary itself |
-
-**Recounts after every stage and stops at the first that fits** — never pruning
-more than necessary, since lost context is a real cost.
-
-### The ceiling is best-effort, not guaranteed
-
-Stated precisely: **the guardrail holds tested workloads under the target, and
-applies best-effort bounded compression when the minimum safe window itself
-exceeds it.** Pinned instructions plus one retained turn can exceed a small
-budget; the ladder then stops at a deterministic floor rather than looping or
-emptying the window. An over-budget window is a cost problem; an empty one is a
-correctness problem.
-
-When that happens the node now **writes a pinned `over_budget` marker into
-`messages`**, so the condition is visible in state and in telemetry rather than
-only in a log line. It deliberately does **not** reroute the graph: deciding
-that an over-budget window warrants partial output is a policy call for the
-Coordinator's owner, not this node's to take unilaterally. Flagged as an open
-item for the team.
-
----
-
-## What `token_count` means
-
-> **`token_count` = the estimated token size of `state.messages` after this node
-> runs — the size of the managed window.**
-
-It is a window size, not a running total, so it goes *down* after compression.
-It is **not** "what the next model call pays" in this system, for the reason at
-the top of this document.
-
----
-
-## Tokenizer calibration — `DESIGN_DOCS.md` risk #14
-
-`calibrate_tokens.py` fits the estimator's constants against llama3.2 through
-Ollama's `/api/chat`, then reports the delta against whatever is in the code.
-Nothing is imported from `snippet.py` before the fit, so the script cannot
-measure its own assumption.
-
-| Constant | Fitted | Method |
-|---|---:|---|
-| Conversation overhead | 24 tokens (once) | intercept of tokens vs. message count |
-| Per-message overhead | 2.00 tokens | **slope** of tokens vs. message count |
-| Characters per token | 5.77 | slope of tokens vs. content length |
-
-### Correction: the earlier calibration was wrong
-
-An earlier version of this file reported per-message overhead as **25 tokens**.
-That figure came from posting a single joined string to `/api/generate`,
-measuring the template cost once, and then applying it to every message.
-`/api/generate` takes one prompt string, so the template is applied **once** — a
-cost measured once cannot be multiplied by message count.
-
-The corrected experiment varies the message count in a real array via
-`/api/chat` and takes the **slope**: **2 tokens per message**, with the
-remaining ~24 being a one-off conversation prefix. The old method overpriced a
-35-turn window by roughly 800 tokens, which is why the headline reduction in the
-earlier draft (53.8%) was inflated; the corrected figure is 21.2%.
-
-The earlier claim that "both numbers are measured, not guessed" was also wrong
-for the chars-per-token coefficient: the old script imported a counter with 5.25
-already hardcoded and could only compare against it. It is now fitted (5.77).
-
----
-
-## Core state preservation and contract compliance
-
-The node touches **only** `messages` and `token_count`.
-`test_context_node_touches_only_messages_and_token_count` iterates every other
-field on `AgentState` and asserts byte-identity.
-
-**No new state fields** — the rolling summary lives inside `messages` as a
-pinned system entry, answering the context half of `CONTRACT_FREEZE_NOTES.md` §7.
-
-`AgentState.messages` is typed `List[Dict[str, Any]]`, so nothing constrained a
-turn's shape — and "prune intermediate tool outputs" is unimplementable unless a
-turn can declare that it *is* one. This layer imposes and validates its own turn
-schema inside that declared type. Anything writing to `messages` should use
-`make_turn()` so its entries stay prunable.
-
----
-
-## Bugs found in review and fixed
-
-| Bug | Consequence | Regression test |
+| Stage | Action | Purpose |
 |---|---|---|
-| Turn ids assigned as `len(messages)` | After compression a 4-entry window holding turns 0/47/48/49 restarted numbering at 4 — duplicate, non-chronological ids | `test_turn_ids_stay_unique_and_increasing_across_compression` |
-| `body[:-recency_turns]` with `recency_turns=0` | `body[:-0]` is `body[:0]`, i.e. empty — the head/tail split silently inverted and skipped stages 1 and 2 | `test_recency_turns_zero_keeps_nothing_verbatim` |
-| `floor_reached` logged only | Nothing reading state could tell the window was over budget | `test_over_budget_condition_is_visible_in_state` |
-| Hardcoded token thresholds in tests | Recalibrating the constants silently invalidated two tests | limits now derived as fractions of measured size |
+| 1 | Shorten bulky tool outputs outside the recent-message window | Removes the largest and least reusable intermediate content first |
+| 2 | Fold older turns into one rolling summary | Preserves important aggregate information while removing detailed prose |
+| 3 | Reduce the recent-message window one turn at a time | Retains recent context for as long as possible |
+| 4 | Shorten the final retained turn | Provides an additional deterministic fallback |
+| 5 | Truncate the summary | Applies a final bounded reduction when necessary |
 
----
+The node recalculates the estimated token count after each stage and stops as soon as the context fits within the threshold. This prevents unnecessary removal of information.
 
-## Composition with the tracing layer
+## Rolling-summary behavior
 
-The rolling summary is new text manufactured from PII-bearing state — a carrier
-that did not exist when the redaction rules were written.
-`test_the_rolling_summary_is_still_redacted_before_telemetry` runs the graph
-with both guardrails active and an explicit tight budget (so the summarization
-stage definitely fires) and confirms zero party-name leaks.
+The guardrail maintains only one rolling summary. Each compression cycle updates and replaces the existing summary rather than adding another summary entry.
 
----
+The summary stores a fixed set of structured values:
 
-## Safety mandate
+```python
+{
+    "turns_compressed": 26,
+    "node_counts": {
+        "actor": 8,
+        "analyzer": 5
+    },
+    "clauses_analyzed": 2,
+    "max_risk": "critical",
+    "redlines_proposed": 8,
+    "rejections": 5,
+    "latest_rejection": "..."
+}
+```
 
-| Requirement | Test |
+Newly compressed history is merged through arithmetic updates to these fields. This prevents the summary from growing through repeated prose concatenation.
+
+### Summary-size evaluation
+
+| History length | Summary size |
+|---:|---:|
+| 12 turns | 32 tokens |
+| 24 turns | 32 tokens |
+| 48 turns | 32 tokens |
+| 96 turns | 32 tokens |
+| 192 turns | 32 tokens |
+
+The measured summary size remained constant across a sixteenfold increase in history length.
+
+The summary retains aggregate conversational information, while detailed operational information remains available in structured graph fields such as:
+
+- `analysis_payload`
+- `execution_state`
+- `rejection_reason_history`
+- `validation_notes`
+
+## Node-level scaling projection
+
+The integrated graph stops after five rounds, so a separate deterministic scaling evaluation applies the same compression function to longer synthetic histories.
+
+| History length | Without guardrail | With guardrail | Reduction |
+|---:|---:|---:|---:|
+| 6 turns | 251 tokens | 251 tokens | 0.0% |
+| 12 turns | 450 tokens | 450 tokens | 0.0% |
+| 24 turns | 852 tokens | 852 tokens | 0.0% |
+| 48 turns | 1,656 tokens | 219 tokens | 86.8% |
+| 96 turns | 3,264 tokens | 219 tokens | 93.3% |
+
+The guardrail performs no compression while the history remains below the threshold. Once compression is activated, the managed size remains bounded as additional history is introduced.
+
+These scaling results are node-level projections and are reported separately from the measurements obtained through the integrated five-round graph.
+
+## Token-counter calibration
+
+The offline token estimator uses constants calibrated against Llama 3.2 through Ollama’s `/api/chat` endpoint.
+
+The estimator follows:
+
+```text
+estimated tokens =
+    conversation overhead
+    + per-message overhead × number of messages
+    + content characters ÷ characters per token
+```
+
+| Constant | Calibrated value |
+|---|---:|
+| Conversation overhead | 24 tokens per conversation |
+| Per-message overhead | 2 tokens per message |
+| Average characters per token | 5.77 |
+
+The calibration uses real message arrays rather than a single concatenated prompt. Message count and content length are varied separately to estimate the corresponding components.
+
+The production guardrail uses this dependency-free estimator so that tests remain deterministic and offline. The reported token values are calibrated estimates rather than vendor billing records.
+
+## Projected token cost
+
+The local Ollama model does not create a hosted API charge. However, the estimated prompt-token reduction can be translated into a provider-specific cost projection.
+
+For 1,000 reviews:
+
+| Metric | Without guardrail | With guardrail | Reduction |
+|---|---:|---:|---:|
+| Estimated prompt tokens | 5.319 million | 4.193 million | 1.126 million |
+
+If a hosted provider charges \(R\) dollars per one million input tokens, the projected saving for 1,000 equivalent reviews is:
+
+```text
+Projected saving = 1.126 × R dollars
+```
+
+This is a cost projection based on estimated input tokens and is not an observed charge.
+
+## Latency evaluation
+
+The benchmark uses five warm-up runs followed by 60 timed runs for each configuration. Both guarded and unguarded executions have a median runtime of approximately 14 ms, with overlapping interquartile ranges.
+
+No meaningful latency difference is claimed because the measured variation between repeated benchmark executions is greater than the guarded-versus-unguarded difference. The guardrail’s demonstrated benefit is reduced context size rather than execution-time improvement in the offline graph.
+
+## Threshold floor
+
+The 1,200-token value is a management target. If pinned system instructions, one retained turn, and the minimum summary still exceed a configured threshold, the node stops at a deterministic floor rather than looping indefinitely or deleting all essential context.
+
+When the minimum safe context remains over budget, the node adds a pinned `over_budget` marker to `messages`. This makes the condition visible in graph state and telemetry.
+
+The guardrail therefore guarantees deterministic termination and bounded compression behavior. The tested integrated workload remained below the threshold after compression.
+
+## Core-state preservation
+
+The Context Management Node modifies only:
+
+```text
+messages
+token_count
+```
+
+Every other field in `AgentState` remains unchanged. Tests compare each field before and after context management and verify that the following operational values are preserved:
+
+- `round_number`
+- `next_route`
+- `is_validated`
+- `rejection_flag`
+- `rejection_reason_history`
+- `analysis_payload`
+- `execution_state`
+- `validation_notes`
+- `error_log`
+- `final_report`
+
+The guarded and unguarded graph executions produce identical final reports and routing outcomes.
+
+## Contract compliance
+
+The context guardrail adds no fields to `AgentState` and does not modify `contract.py`.
+
+The rolling summary is stored as a validated system entry within the existing `messages` list. The current estimated context size is stored in the existing `token_count` field.
+
+This preserves the frozen shared-state contract.
+
+## Integration with the privacy guardrail
+
+The rolling summary may contain information derived from confidential graph state. Therefore, the integrated evaluation also passes summarized history through Student 5’s State Redaction Interceptor.
+
+The cross-layer test confirms that:
+
+- Context summarization is activated.
+- The summary is included in telemetry.
+- Party names are removed from the telemetry copy.
+- No planted party-name leaks remain.
+- The graph’s operational state remains unchanged.
+
+This verifies that the context and privacy guardrails operate together correctly.
+
+## Limitations
+
+The evaluation has the following limitations:
+
+1. No production node currently sends `state.messages` to an LLM. Prompt-token results are therefore estimated at a deterministic history-consuming test agent.
+2. The token counter is a calibrated heuristic and may differ from exact counts produced by other models or tokenizers.
+3. The fixed-schema summary does not preserve every clause identifier or every earlier reasoning step.
+4. The 1,200-token threshold is a configured management target rather than a universal model limit.
+5. If the minimum safe context exceeds the target, the node reports the condition instead of deleting all essential context.
+6. Identical graph output demonstrates state preservation in the current deterministic workflow but does not establish that every future LLM would reason identically from compressed history.
+
+## Safety compliance
+
+The guardrail performs no external actions during normal operation or automated testing.
+
+| Safety requirement | Verification |
 |---|---|
-| No network traffic | `test_no_network_traffic_during_compression` — `socket.connect` raises; the run still completes |
-| No file modifications | `test_module_touches_no_filesystem_or_shell` |
+| No network traffic during compression | Socket connections are blocked during the integrated test |
+| No file modifications | The context-management module contains no filesystem- or shell-writing operations |
+| No external model call during tests | All test agents and token measurements are deterministic and offline |
+| No destructive operations | The guardrail only reads and updates graph state |
 
-`calibrate_tokens.py` is the only component that talks to anything; it reaches a
-local Ollama server, writes nothing, and is never imported by tests.
+`calibrate_tokens.py` is an optional calibration utility that communicates only with a local Ollama server. It is not imported or executed by the automated test suite and does not write files or perform destructive actions.
 
+## Test summary
+
+```text
+pytest student_6_tokens/ -q
+29 passed
 ```
-pytest student_6_tokens/ -q   ->  29 passed
-```
+
+The tests cover:
+
+- Unguarded context growth
+- Threshold breaches
+- Guarded context compression
+- Before-and-after prompt estimates
+- Equivalent worker invocations
+- Identical graph output
+- Turn-schema validation
+- Unique and increasing turn identifiers
+- Tool-output pruning
+- Rolling-summary replacement
+- Bounded summary size
+- Token recounting after compression
+- Deterministic floor behavior
+- Configurable context budgets
+- Core-state preservation
+- Frozen-contract compliance
+- Integration with the privacy interceptor
+- Network and filesystem safety
+
+## Conclusion
+
+Without the guardrail, the managed context grew to 1,803 estimated tokens and exceeded the 1,200-token target during four of twelve graph transitions. With the Context Management Node active, the peak window decreased to 1,157 tokens, all threshold breaches were eliminated, and the estimated prompt size at history-consuming agent invocations decreased by 21.2%.
+
+The guarded and unguarded executions completed the same five-round workload and produced identical final reports. The implementation passed 29 tests, preserved every operational state field, and required no changes to the frozen contract.
