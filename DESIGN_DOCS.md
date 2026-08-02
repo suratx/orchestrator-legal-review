@@ -20,7 +20,7 @@ their own node and fill in any owner-specific detail marked TODO.
 | 2 | Silent Hallucination | Analyzer | Person 2 | Three code layers: (a) `.with_structured_output(ContractAnalysis)` forces the model through a Pydantic schema; (b) `contract.validate_grounded()` re-validates against the source text — every `verbatim_quote`, `clause_id` and `counterparty` must occur in `raw_input`, and `overall_risk` must equal the worst clause risk; (c) on either failure the validator's exact message is fed back for exactly one in-node self-correction (`MAX_ANALYZER_RETRIES = 1`), then the node sets `rejection_flag` rather than guess. Layer (b) is the load-bearing one: structural validation *cannot* catch a hallucination, because a hallucination is structurally valid by construction. See `student_2_silent/METRICS.md`. |
 | 3 | Rogue Tool Execution | Actor | Person 3 | Tool-call interception against a hardcoded permission matrix; raises `InvalidToolCallException`, no retry. See `student_3_rogue/`. TODO (Person 3). |
 | 4 | Downstream Cascade Failure | Validator | Person 4 | Explicit sanitization node between Actor and Reporter: programmatic assertions on `execution_state` types/keys, `executed_count`↔`results` consistency, `external_action_performed=False`, clause-ID grounding into `analysis_payload`, and high/critical-only redlines. On failure sets `rejection_flag`, appends `validator: <reason>` to `rejection_reason_history`, clears poisoned execution state, and forces Coordinator rollback (§5.3); identical reasons twice escalate to `partial_output`. See `student_4_cascade/METRICS.md` (crashes 4/4 → 0/4). |
-| 5 | Data Privacy Leak (Tracing) | Global — Tracing | Person 5 | **Closed.** Centralized State Redaction Interceptor on the graph→telemetry boundary, covering all four channels: (a) a `RedactingTracer` callback redacts inputs, outputs, **metadata**, **tags** and **error strings** on every node transition; (b) `raw_input`/`verbatim_quote` are replaced with a keyed HMAC fingerprint rather than pattern-matched, so contract body never has to be recognised; (c) a key denylist drops `api_key`/`password`/`ssn`-style keys on name alone, and entity replacement handles party names that no regex can see; (d) every escape hatch fails closed — depth cap, cycles, unknown object types and redactor crashes all return a sentinel, never the value; (e) `audit_tracing_routes()` enumerates the *implicit* `LangChainTracer` route and refuses to run unless every route redacts. Measured: 13/13 planted secrets and 511 occurrences → 0, +14.87 ms/run, egress −34.1%, graph output unchanged. See `student_5_trace/METRICS.md`. |
+| 5 | Data Privacy Leak (Tracing) | Global — Tracing | Person 5 | **Closed.** Centralized State Redaction Interceptor on the graph→telemetry boundary, covering all four channels: (a) a `RedactingTracer` callback redacts inputs, outputs, **metadata**, **tags** and **error strings** on every node transition; (b) `raw_input`/`verbatim_quote` are replaced with a keyed HMAC fingerprint rather than pattern-matched, so contract body never has to be recognised; (c) a key denylist drops `api_key`/`password`/`ssn`-style keys on name alone, and entity replacement handles party names that no regex can see; (d) every escape hatch fails closed — depth cap, cycles, unknown object types and redactor crashes all return a sentinel, never the value; (e) `audit_tracing_routes()` enumerates the *implicit* `LangChainTracer` route and refuses to run unless every route redacts. Measured: 13/13 planted secrets and 549 occurrences → 0, plus 234 bare party short forms → 0, +18.24 ms/run, egress −34.5%, graph output unchanged. See `student_5_trace/METRICS.md`. |
 | 6 | Context Window Explosion / Token Burn | Global — Context Manager | Person 5 | Token-threshold check triggers summarization + pruning of `state.messages`. See `student_6_tokens/`. TODO (Person 5). |
 
 ## Additional Risks Considered (13)
@@ -75,6 +75,17 @@ issues.
   guardrail that verifies itself against its own output is blind to a parallel
   path. Worth a look at whether risks #10 (real tool by misconfiguration) and
   #17 (schema drift) have the same shape.
+- **New risk surfaced during implementation (Person 5) — canonical form vs.
+  colloquial form:** redacting `Globex Industries Ltd` leaves `"Globex breached
+  its duty"` untouched. Contracts define short forms in their opening paragraph
+  and then use them for everything after, so the canonical name is precisely the
+  form that appears *least* in the sentences that carry meaning. Measured at
+  **234 bare short-form exposures** in a single run that was otherwise clean.
+  Closed by deriving short forms from the legal name and parsing the contract's
+  own `("Globex")` definitions. **Generalizes:** any allowlist/denylist keyed on
+  a canonical identifier should be checked for the colloquial variants the
+  domain actually uses — worth Person 3 confirming the tool permission matrix
+  cannot be reached by an alias of a blocked tool name.
 - **New risk surfaced during implementation (Person 5) — over-redaction as a
   privacy failure:** a redactor that eats operational strings gets switched off,
   and a switched-off guardrail leaks everything. So false positives are a

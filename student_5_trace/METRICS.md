@@ -18,9 +18,10 @@ into the telemetry stream.
 | Metric | Without guardrail | With guardrail |
 |---|---:|---:|
 | **Unique planted secrets exposed** | **13 of 13** | **0 of 13** |
-| **Total exposure occurrences** | **511** | **0** |
+| **Total exposure occurrences** | **549** | **0** |
+| **Bare party short forms exposed** | **234** | **0** |
 | Trace events emitted | 22 | 22 |
-| Telemetry payload shipped | 61,825 bytes | 40,769 bytes (−34.1%) |
+| Telemetry payload shipped | 67,829 bytes | 44,398 bytes (−34.5%) |
 | Operational fields preserved | 11 of 11 | 11 of 11 |
 | Graph outcome (`final_report`) | identical | identical |
 
@@ -37,9 +38,9 @@ both.
 
 | Planted secret | Occurrences | Guarded |
 |---|---:|---:|
-| `Acme Corporation` (client name) | 82 | 0 |
+| `Acme Corporation` (client name) | 101 | 0 |
+| `Globex Industries Ltd` (counter-party) | 99 | 0 |
 | `db-prod-01.acme.internal` (internal host) | 71 | 0 |
-| `Globex Industries Ltd` (counter-party) | 80 | 0 |
 | `j.okonkwo@globex-industries.example` | 49 | 0 |
 | `postgresql://svc_review:Fak3P4ss@…` (prod DSN) | 38 | 0 |
 | `(713) 555-0182` (signatory phone) | 38 | 0 |
@@ -50,7 +51,42 @@ both.
 | `4820 Kirby Drive, Houston, TX 77098` | 19 | 0 |
 | `AKIAIOSFODNN7EXAMPLE` (AWS key) | 19 | 0 |
 | `lsv2_pt_…` (LangSmith API key) | 11 | 0 |
-| **Total** | **511** | **0** |
+| **Total** | **549** | **0** |
+
+### Party short forms — the leak the full-name rule misses
+
+Redacting `Globex Industries Ltd` does nothing for `"Globex breached its duty
+to Acme"`. Contracts define short forms in their opening paragraph —
+`... Acme Corporation ("Acme") and Globex Industries Ltd ("Globex") ...` — and
+use them for everything after, which is exactly where the damaging sentences
+live. Nothing marks a short form as sensitive: no key holds it, no pattern
+matches it, it is just a capitalised word.
+
+| Short form | Standalone occurrences, unguarded | Guarded |
+|---|---:|---:|
+| `Globex` | 106 | 0 |
+| `Acme` | 128 | 0 |
+| **Total** | **234** | **0** |
+
+Counted with `count_standalone_occurrences()`, which excludes hits inside the
+full name — a derived short form is normally a prefix of the name it came from,
+so a naive substring count would tally every full-name occurrence as a
+short-form leak too and inflate both columns.
+
+Short forms come from two places, mirroring how the full names are obtained:
+
+1. **Derived** by stripping corporate suffixes — `Globex Industries Ltd` →
+   `Globex Industries`, `Globex`; `Acme Corporation` → `Acme`.
+2. **Parsed** from the contract's own parenthesised definitions, which catches
+   aliases no derivation rule would produce: a code name, an acronym, a trading
+   name.
+
+Derivation is filtered, because over-redaction is its own failure mode. A party
+called `First National Bank` yields **no** short form — every token is too
+generic, and blanking "First" out of every trace would destroy readable prose
+while protecting nobody. `The Boeing Company` correctly skips the generic
+leading token and yields `Boeing`. Enforced by
+`test_derivation_refuses_generic_short_forms`.
 
 ---
 
@@ -114,18 +150,22 @@ would upload in the clear. **Fail closed, not fail quiet.**
 
 | | Median per graph run |
 |---|---:|
-| No tracing at all | 1.77 ms |
-| Unguarded tracing | 2.12 ms |
-| **Redacted tracing** | **16.98 ms** |
-| Redaction overhead | **+14.87 ms/run** (0.68 ms per trace event) |
+| No tracing at all | 1.73 ms |
+| Unguarded tracing | 2.02 ms |
+| **Redacted tracing** | **20.27 ms** |
+| Redaction overhead | **+18.24 ms/run** (0.83 ms per trace event) |
 
-Reported honestly both ways: **+702% relative** to unguarded tracing, and
-**+15 ms absolute** on a run whose real-world cost is dominated by LLM calls
+Reported honestly both ways: **+901% relative** to unguarded tracing, and
+**+18 ms absolute** on a run whose real-world cost is dominated by LLM calls
 measured in seconds. On the live Ollama path a single Analyzer call is ~2–4 s,
 so redaction is well under 1% of wall-clock. The relative figure looks alarming
 only because the baseline it is measured against is nearly free.
 
-Payload size *falls* 34.1%, because fingerprinting the contract body replaces
+Short-form expansion accounts for roughly 3 ms of that: each derived form is an
+additional case-insensitive pass over every string in the payload. Cheap
+relative to what it closes — 234 exposures.
+
+Payload size *falls* 34.5%, because fingerprinting the contract body replaces
 kilobytes of clause text with a 16-character digest — the guardrail reduces
 egress volume as a side effect.
 
@@ -261,9 +301,9 @@ function returning a deep copy, and
 ## Test summary
 
 ```
-pytest student_5_trace/ -q     ->  32 passed
+pytest student_5_trace/ -q     ->  38 passed
 ```
 
 Covering the reproduction against the real compiled graph, all four telemetry
-channels, tracing-route control, every fail-closed path, the pseudonymization
-properties, and the measured cost in observability.
+channels, tracing-route control, party short forms, every fail-closed path, the
+pseudonymization properties, and the measured cost in observability.

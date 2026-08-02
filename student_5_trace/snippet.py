@@ -135,6 +135,140 @@ _ENV_ENTITIES = tuple(
 )
 
 
+# --------------------------------------------------------------------------
+# SHORT FORMS OF PARTY NAMES
+# --------------------------------------------------------------------------
+#
+# Redacting the full legal name alone is not enough. Contracts define short
+# forms in their opening paragraph and then use them for the rest of the
+# document:
+#
+#     ... between Acme Corporation ("Acme") and Globex Industries Ltd
+#     ("Globex") ...
+#
+# after which every subsequent reference is the bare short form. Replacing
+# only "Globex Industries Ltd" leaves "Globex breached its duty" untouched --
+# the party is still identified, in the sentence that actually says something
+# damaging about them.
+#
+# Two sources, mirroring how the full names are obtained:
+#   1. DERIVED from the legal name by stripping corporate suffixes.
+#   2. PARSED from the contract's own parenthesised definitions.
+#
+# Both are filtered, because over-redaction is its own failure: a short form
+# that is a common word would blank out ordinary prose. "First National Bank"
+# must NOT yield "First".
+
+#: Trailing tokens that carry no identifying information.
+_CORPORATE_SUFFIXES = frozenset({
+    "ltd", "ltd.", "limited", "inc", "inc.", "incorporated", "llc", "l.l.c.",
+    "llp", "lp", "plc", "corp", "corp.", "corporation", "co", "co.", "company",
+    "gmbh", "ag", "nv", "n.v.", "sa", "s.a.", "bv", "b.v.", "pty", "pte",
+    "srl", "spa", "oy", "ab", "as", "kk", "kg", "sas", "sarl",
+})
+
+#: Words too generic to use as a standalone party pseudonym. Redacting these
+#: would destroy readable prose without protecting anybody.
+_SHORT_FORM_STOPWORDS = frozenset({
+    "the", "and", "for", "first", "second", "third", "national", "international",
+    "global", "american", "european", "united", "general", "standard", "premier",
+    "associated", "group", "holdings", "partners", "services", "systems",
+    "solutions", "technologies", "technology", "industries", "enterprises",
+    "bank", "trust", "capital", "management", "consulting", "associates",
+    "company", "corporation", "limited", "brothers", "sons", "insurance",
+})
+
+#: A short form must be at least this long to be replaced at all.
+MIN_SHORT_FORM_CHARS = 4
+
+#: Matches a contract's own definition: `("Globex")` or `(the "Company")`.
+_DEFINED_SHORT_FORM = re.compile(
+    r"\(\s*(?:the\s+)?[\"“‘']([^\"”’']{2,40})[\"”’']\s*\)"
+)
+
+
+def _is_usable_short_form(candidate: str) -> bool:
+    bare = candidate.strip().strip(".,")
+    return (
+        len(bare) >= MIN_SHORT_FORM_CHARS
+        and bare.lower() not in _SHORT_FORM_STOPWORDS
+    )
+
+
+def derive_short_forms(name: str) -> List[str]:
+    """Derive usable short forms from a full legal name.
+
+    'Globex Industries Ltd' -> ['Globex Industries', 'Globex']
+    'Acme Corporation'      -> ['Acme']
+    'First National Bank'   -> []          (every token is too generic)
+    """
+    cleaned = name.strip().rstrip(".,")
+    tokens = [token for token in re.split(r"\s+", cleaned) if token]
+    if not tokens:
+        return []
+
+    core = list(tokens)
+    while len(core) > 1 and core[-1].lower().strip(".,") in _CORPORATE_SUFFIXES:
+        core.pop()
+
+    forms: List[str] = []
+
+    # the name minus its corporate suffix, e.g. "Globex Industries".
+    # rstrip because dropping "Inc." off "Wayne Enterprises, Inc." otherwise
+    # leaves the separating comma dangling on the end.
+    if len(core) < len(tokens):
+        trimmed = " ".join(core).rstrip(" ,.")
+        if trimmed:
+            forms.append(trimmed)
+
+    # the first distinctive token, e.g. "Globex" -- skipping generic leaders
+    # so "The Boeing Company" yields "Boeing", not "The".
+    if len(core) > 1:
+        for token in core:
+            if _is_usable_short_form(token):
+                forms.append(token.strip(".,"))
+                break
+
+    seen = {cleaned.lower()}
+    unique: List[str] = []
+    for form in forms:
+        if form.lower() not in seen:
+            seen.add(form.lower())
+            unique.append(form)
+    return unique
+
+
+def parse_defined_short_forms(text: str) -> List[str]:
+    """Extract short forms the document defines for itself.
+
+    The contract states its own aliases in parentheses; reading them is more
+    reliable than guessing, and catches aliases no derivation rule would
+    produce (a code name, an acronym, a trading name).
+    """
+    return [
+        match.group(1).strip().strip(".,")
+        for match in _DEFINED_SHORT_FORM.finditer(text)
+        if _is_usable_short_form(match.group(1))
+    ]
+
+
+def expand_entities(entities: Sequence[str]) -> List[str]:
+    """Every entity, plus its derived short forms, deduplicated."""
+    expanded: List[str] = []
+    for entity in entities:
+        expanded.append(entity)
+        expanded.extend(derive_short_forms(entity))
+
+    seen: set = set()
+    unique: List[str] = []
+    for entity in expanded:
+        key = entity.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(entity.strip())
+    return unique
+
+
 # ==========================================================================
 # 2. PATTERN REGISTRY
 # ==========================================================================
@@ -346,6 +480,16 @@ def collect_entities(payload: Any, depth: int = 0) -> List[str]:
             if isinstance(key, str) and _key_matches(key, ENTITY_KEYS):
                 if isinstance(value, str) and value.strip():
                     found.append(value.strip())
+            # Read the document's own alias definitions before the body is
+            # fingerprinted away. The aliases matter for OTHER fields --
+            # messages, validation notes -- where the bare short form appears
+            # with nothing to mark it as a party name.
+            if (
+                isinstance(key, str)
+                and _key_matches(key, FINGERPRINT_KEY_PATTERNS)
+                and isinstance(value, str)
+            ):
+                found.extend(parse_defined_short_forms(value))
             found.extend(collect_entities(value, depth + 1))
     elif isinstance(payload, (list, tuple)):
         for item in payload:
@@ -420,7 +564,9 @@ def redact_payload(payload: Any, extra_entities: Sequence[str] = ()) -> Any:
     there is exactly one place where the policy lives and exactly one place
     that can be wrong.
     """
-    entities = list(_ENV_ENTITIES) + list(extra_entities) + collect_entities(payload)
+    entities = expand_entities(
+        list(_ENV_ENTITIES) + list(extra_entities) + collect_entities(payload)
+    )
     return _redact(payload, entities, 0, set())
 
 
@@ -549,7 +695,11 @@ class RedactingTracer(BaseCallbackHandler):
         #: not -- nothing in state is keyed "our client", so to both the
         #: regex engine and the entity harvester it is ordinary capitalised
         #: prose. Configured, because you always know who your client is.
-        self.entities: Tuple[str, ...] = tuple(_ENV_ENTITIES) + tuple(entities)
+        #: Expanded once here so error strings and tags -- which are redacted
+        #: outside `redact_payload` -- get short-form coverage too.
+        self.entities: Tuple[str, ...] = tuple(
+            expand_entities(list(_ENV_ENTITIES) + list(entities))
+        )
 
     # -- helpers ----------------------------------------------------------
     def _scrub(self, value: Any) -> Any:
@@ -852,6 +1002,24 @@ class LeakReport:
             f"{self.corpus_size} | total exposure occurrences: "
             f"{self.total_occurrences}"
         )
+
+
+def count_standalone_occurrences(
+    blob: str, short_form: str, full_name: Optional[str] = None
+) -> int:
+    """Count a short form only where it stands alone, not inside the full name.
+
+    Needed because a derived short form is usually a prefix of the name it came
+    from ("Globex" ⊂ "Globex Industries Ltd"). A naive substring count would
+    tally every occurrence of the full name as a short-form leak too, and
+    inflate the before/after numbers in both directions.
+    """
+    pattern = r"\b" + re.escape(short_form) + r"\b"
+    if full_name and full_name.lower().startswith(short_form.lower()):
+        remainder = full_name[len(short_form):].strip()
+        if remainder:
+            pattern += r"(?!\s+" + re.escape(remainder) + r")"
+    return len(re.findall(pattern, blob, re.IGNORECASE))
 
 
 def scan_for_leaks(
