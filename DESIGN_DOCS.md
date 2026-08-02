@@ -9,7 +9,8 @@
 
 The system was designed as a dynamically routed state machine rather than a linear prompt chain. A deterministic Coordinator examines the shared state after each worker transition and decides whether to continue, retry, roll back, report, or terminate with partial output. All workers exchange data through the frozen `AgentState` contract, which rejects undeclared fields and preserves structural consistency across the graph.
 
-The six assignment-defined failure modes were implemented as code-level guardrails. Nineteen additional failure risks were then evaluated to identify possible bypasses, integration failures, observability weaknesses, and limitations that could remain even when the primary guardrails operate correctly. External actions are mocked throughout the system.
+The six primary guardrails are implemented across the individual worker modules and global graph layers through executable validation and routing logic rather than prompt-only instructions. The Coordinator remains deterministic and LLM-free, Analyzer output is validated against the frozen contract, tool execution is restricted to mocked functions, malformed downstream state is rejected before reporting, telemetry is sanitized at the graph boundary, and context is compressed toward the configured threshold before Coordinator transitions.
+
 
 ## 2. Implemented guardrails
 
@@ -28,7 +29,7 @@ The following risks are additional to the six required failure modes.
 
 | # | Additional risk | Design decision |
 |---:|---|---|
-| 7 | Coordinator selects an unregistered route | Route values are constrained to shared `ROUTE_*` constants, and LangGraph validates registered conditional edges during graph construction. |
+| 7 | Coordinator selects an unregistered route | The Coordinator assigns routes only through the shared `ROUTE_*` constants, and the graph’s conditional-edge mapping contains only registered destination nodes. |
 | 8 | Concurrent branches overwrite shared state out of order | Deferred because the current graph is deliberately sequential. Parallel execution would require explicit reducers, conflict-resolution rules, and concurrency tests. |
 | 9 | State-schema drift after the contract freeze | `AgentState` uses Pydantic `extra="forbid"`, so undeclared fields fail validation instead of silently entering shared state. Contract changes require documented team review. |
 | 10 | Structurally valid but empty analysis payload | `ContractAnalysis.clauses` requires at least one item, and every `ClauseRisk` field is mandatory. Downstream routing uses `is_validated` rather than payload truthiness alone. |
@@ -39,7 +40,7 @@ The following risks are additional to the six required failure modes.
 | 15 | An authorized tool targets an invalid clause or inappropriate risk level | Tool middleware verifies that the clause exists in the validated analysis and permits redlining only for high- or critical-risk clauses. |
 | 16 | The Validator omits an important legal business rule | Structural and cross-node invariants are encoded in the current Validator. Jurisdiction-specific legal interpretation remains outside the deterministic v1 guardrail and requires qualified human review. |
 | 17 | The Reporter fails while producing a failure report | The Reporter is deterministic and performs no external action, reducing its failure surface. A separate Reporter guardrail was considered but deferred because it is outside the six assigned failure modes. |
-| 18 | Telemetry service failure blocks graph execution | Submission tests use an in-memory telemetry sink, and tracing is isolated from operational state. A telemetry failure must not alter routing decisions or prevent the graph from producing its report. |
+| 18 | Telemetry processing alters or interrupts graph execution | Submission tests use an in-memory telemetry sink and verify that enabling redacted tracing produces the same operational state and final report as an untraced execution. |
 | 19 | Environment-enabled tracing creates an unnoticed second upload route | The tracing-route audit detects implicitly created LangChain tracers and refuses execution when any telemetry route cannot be confirmed as redacting. |
 | 20 | Sensitive data escapes through metadata, tags, or exception messages | Redaction covers four distinct channels: inputs and outputs, metadata, tags, and error strings. Tests verify each channel separately. |
 | 21 | Redaction misses unusual formats or removes harmless identifiers | Non-standard-format recall and benign-lookalike false positives are measured explicitly. The current evaluation detected 3 of 5 difficult formats and preserved 6 of 7 benign lookalikes. |
