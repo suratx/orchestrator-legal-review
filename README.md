@@ -54,9 +54,12 @@ fail loudly and stop, never to fail quietly and continue.
  every state transition above ──► [ Redaction Interceptor ] ──► telemetry
 ```
 
-Not a linear pipeline: every worker returns control to the Coordinator, which
+Not a linear pipeline: no worker decides what happens next. Each one returns
+control upward — through the Context Manager, then to the Coordinator — which
 reads state flags and decides whether to go forward, roll back, or stop. That
-single choke point is what makes a deterministic loop guardrail possible.
+single choke point is what makes a deterministic loop guardrail possible, and
+putting the Context Manager immediately in front of it means every routing
+decision is made against a context window that has already been bounded.
 
 The two global layers are not workers. The **Context Manager** (#6) sits at the
 head of every loop transition, so no worker can hand the model a context window
@@ -64,8 +67,12 @@ it has not bounded. The **Redaction Interceptor** (#5) sits on the
 graph→telemetry boundary rather than inside any node, so it covers all six
 nodes — and any node added later — by construction.
 
-Full topology, node interfaces and routing/retry/rollback rules:
-[`ARCHITECTURE_DESIGN.md`](ARCHITECTURE_DESIGN.md).
+Node interfaces and the routing/retry/rollback rules are in
+[`ARCHITECTURE_DESIGN.md`](ARCHITECTURE_DESIGN.md) — the design record, written
+before the two global layers were built, so its §3 diagram shows the worker
+topology only. The diagram above is the graph as assembled in
+[`main_system.py`](main_system.py), which is the authority on what actually
+runs.
 
 ---
 
