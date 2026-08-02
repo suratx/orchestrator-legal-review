@@ -57,12 +57,11 @@ schema alone could not see.
 **Role:** Actor & Tool Security (Worker B)
 **System:** Multi-agent legal contract review orchestrator (LangGraph, Python)
 
-TODO (Person 3): describe the unauthorized/malformed tool call you
-reproduced in `student_3_rogue/test_failure.py`, the permission-matrix
-interception + `InvalidToolCallException` guardrail you built, and the
-quantified before/after metric (e.g. "unauthorized tool calls executed:
-N → 0").
+While developing Worker B for a LangGraph-based legal contract review orchestrator, I reproduced a rogue tool execution failure in which an unguarded Actor accepted a model-generated `delete_contract` request. Although the destructive operation was fully mocked, the test proved that an unauthorized call could reach the execution layer without permission checks.
 
+I implemented a deterministic middleware that validates the complete tool-call array before any function runs. The guardrail checks tool names against a hardcoded permission matrix, validates required and optional parameters, rejects unknown arguments and incorrect types, verifies that the target clause exists in the frozen `ContractAnalysis`, and permits redlining only for high- or critical-risk clauses. Invalid requests raise `InvalidToolCallException`, set `rejection_flag`, clear approved calls, and record the exact failure in `error_log`.
+
+In deterministic testing, unauthorized mock executions fell from 1 to 0, producing a 100% block rate. Six tests confirmed that malicious calls are blocked while valid mocked redlines still execute, with zero real external actions performed.
 ---
 
 ## Person 4 — Validator & Downstream Cascade Guardrail
