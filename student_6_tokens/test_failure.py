@@ -209,18 +209,20 @@ def main() -> None:
     print(f"   window at each turn         : {unguarded.windows}")
     print(f"   peak window                 : {_fmt(unguarded.peak)} tokens "
           f"(ceiling {MAX_CONTEXT_TOKENS})")
-    print(f"   cumulative input tokens     : {_fmt(unguarded.cumulative)}")
-    print(f"   final history length        : {len(unguarded_result['messages'])} turns")
+    print(f"   cumulative window estimate  : {_fmt(unguarded.cumulative)}  (projection)")
+    print(f"   final window                : "
+          f"{_fmt(DEFAULT_COUNTER.count_messages(unguarded_result['messages']))} tokens "
+          f"in {len(unguarded_result['messages'])} turns")
 
     print("\n2. WITH GUARDRAIL")
     print(f"   window at each turn         : {guarded.windows}")
     print(f"   peak window                 : {_fmt(guarded.peak)} tokens")
-    print(f"   cumulative input tokens     : {_fmt(guarded.cumulative)}")
-    print(f"   final history length        : {len(guarded_result['messages'])} turns")
-    summaries = [m for m in guarded_result["messages"] if is_summary(m)]
-    print(f"   rolling summaries in window : {len(summaries)} (must be <= 1)")
-    if summaries:
-        print(f"   summary content             : {summaries[0]['content'][:96]}...")
+    print(f"   cumulative window estimate  : {_fmt(guarded.cumulative)}  (projection)")
+    print(f"   final window                : "
+          f"{_fmt(DEFAULT_COUNTER.count_messages(guarded_result['messages']))} tokens "
+          f"in {len(guarded_result['messages'])} turns")
+    print("   note: the turn COUNT is unchanged because stage 1 digests bulky")
+    print("         tool outputs in place. The window shrinks, the list does not.")
 
     saved = unguarded.cumulative - guarded.cumulative
     pct = 100 * saved / unguarded.cumulative
@@ -231,7 +233,21 @@ def main() -> None:
     print(f"   graph output      : identical "
           f"({guarded_result['final_report'] == unguarded_result['final_report']})")
 
-    print("\n4. NODE-LEVEL SCALING STUDY (projection -- not an in-graph measurement)")
+    print("\n4. THE ROLLING SUMMARY")
+    print("   A 5-round run only ever needs stage 1, so no summary appears above.")
+    print("   Stage 2 -- folding old turns into ONE rolling summary -- is what keeps")
+    print("   the window flat as histories get longer. Shown here on the node:")
+    for turns in (48, 96, 192):
+        compressed, tokens, stages = compress_history(synthetic_history(turns))
+        summary = next((m for m in compressed if is_summary(m)), None)
+        marker = (f"{DEFAULT_COUNTER.count_message(summary)} tokens"
+                  if summary else "none")
+        print(f"      {turns:>3} turns -> window {tokens:>4} tokens | "
+              f"summaries {sum(is_summary(m) for m in compressed)} | summary {marker}")
+    sample = next(m for m in compress_history(synthetic_history(96))[0] if is_summary(m))
+    print(f"      content: {sample['content'][:88]}...")
+
+    print("\n5. NODE-LEVEL SCALING STUDY (projection -- not an in-graph measurement)")
     print("   The graph stops at 5 rounds by design. This shows what the same")
     print("   guardrail does to longer histories, measured on the node alone.")
     print(f"   {'turns':>6} | {'unguarded':>10} | {'guarded':>8} | {'reduction':>9}")
