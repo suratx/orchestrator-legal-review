@@ -236,7 +236,9 @@ python main_system.py
 
 `main_system.py` assembles the shared graph and provides the deterministic integration path used for offline testing.
 
-In the current repository version, its default entry point injects an Analyzer stub so that the graph can be demonstrated without a running model. The complete guarded Analyzer implementation is exercised through its tests and live graph:
+The entry point runs all five guardrails, including the real grounding-validated Analyzer, so it requires Ollama to be running. The Analyzer stub remains the default inside `build_graph()` so that the test suite stays fully offline.
+
+The Analyzer is additionally exercised on its own through its tests and live graph:
 
 ```bash
 python student_2_silent/demo_live_graph.py
@@ -296,7 +298,7 @@ The following measurements are taken from the repository’s failure reproductio
 | Guardrail | Before | After |
 |---|---:|---:|
 | Coordinator loop limit | Unguarded harness reached its 500-iteration safety cap | Execution stopped when the configured round limit was reached |
-| Analyzer grounding | 8 unsupported analyses in 12 live benchmark cases | 0 unsupported analyses in 12 cases |
+| Analyzer grounding | 8 of 12 defective analyses reached Worker B (deterministic corpus); 8.3% silent failures across 12 live runs | 0 of 12 and 0% respectively |
 | Actor authorization | Unauthorized tool execution was possible | Unauthorized executions reduced to 0 |
 | Validator sanitization | 4 of 4 malformed cases reached downstream processing | 0 of 4 malformed cases reached downstream processing |
 | Telemetry redaction | Sensitive values appeared across telemetry channels | Sensitive occurrences reduced to 0 after interception |

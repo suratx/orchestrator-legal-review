@@ -8,7 +8,9 @@ tests via build_graph(...).
 
 Active guardrails wired here:
   - Person 1: Coordinator round_number ceiling + repeated-rejection escalate
-  - Person 2: Analyzer (optional; requires Ollama — default stub for CI)
+  - Person 2: Analyzer grounding + one bounded self-correction. The entry
+    point below runs the real node, so `ollama serve` must be up; the
+    `build_graph()` default stays the stub to keep the test suite offline.
   - Person 3: Actor tool-permission middleware
   - Person 4: Validator sanitization + rejection_flag rollback
   - Person 5: State Redaction Interceptor on every telemetry channel
@@ -20,6 +22,8 @@ tracing route and refuses to run while one would upload in the clear.
 
 from __future__ import annotations
 
+import os
+
 from langgraph.graph import END, StateGraph
 
 from contract import (
@@ -30,6 +34,7 @@ from contract import (
     AgentState,
 )
 from student_1_loop.snippet import coordinator_node, route_after_coordinator
+from student_2_silent.snippet import analyzer_node
 from student_3_rogue.snippet import actor_node
 from student_4_cascade.snippet import validator_node
 from student_5_trace.snippet import InMemorySink, redacted_trace_config
@@ -151,8 +156,10 @@ def build_graph(
     in adversarial stand-ins without duplicating the wiring.
 
     Defaults wire Person 3's Actor, Person 4's Validator and Person 5's Context
-    Manager. Analyzer defaults to the offline stub (Person 2's live node needs
-    Ollama).
+    Manager. Analyzer defaults to the offline stub because Person 2's live node
+    needs Ollama and the test suite must stay offline -- the `__main__` entry
+    point below overrides it with the real `analyzer_node`, so a plain
+    `python main_system.py` exercises all five guardrails.
 
     Person 5's context layer enters here in two places:
       - `record_history` wraps each worker so the GRAPH appends that worker's
@@ -199,8 +206,32 @@ def build_graph(
     return graph.compile()
 
 
+def _require_ollama() -> None:
+    """The entry point runs Person 2's real Analyzer, which builds a ChatOllama
+    client at call time. Fail with one readable line instead of letting a
+    connection error surface as a client-library traceback mid-graph."""
+    import urllib.error
+    import urllib.request
+
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    try:
+        urllib.request.urlopen(f"{base_url}/api/tags", timeout=3)
+    except (urllib.error.URLError, OSError):
+        raise SystemExit(
+            f"Cannot reach Ollama at {base_url}.\n"
+            "The Analyzer guardrail runs a real model here -- start the server "
+            "with `ollama serve` (and `ollama pull llama3.2`).\n"
+            "For a run that needs no model server, use the offline suite: "
+            "python -m pytest -q"
+        )
+
+
 if __name__ == "__main__":
-    app = build_graph()
+    # Person 2's guardrail, active: the real grounding-validated Analyzer, not
+    # the CI stub. `build_graph`'s default is left alone so the offline tests
+    # (and every teammate's injected fixture) keep working unchanged.
+    _require_ollama()
+    app = build_graph(analyzer=analyzer_node)
     initial_state = AgentState(
         raw_input=(
             "MASTER SERVICES AGREEMENT\n"
