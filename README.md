@@ -96,11 +96,11 @@ Detailed interfaces and routing rules are documented in `[ARCHITECTURE_DESIGN.md
 | Person 2 — Silent hallucination guardrail (2 min)                                                           | `[student_2_silent/demo.mp4](student_2_silent/demo.mp4)`                                                                                                                       |
 | Person 3 — Rogue tool execution guardrail (2 min)                                                           | `[student_3_rogue/person3_rogue_tool_demo.mp4](student_3_rogue/person3_rogue_tool_demo.mp4)`                                                                                   |
 | Person 4 — Downstream cascade / Validator guardrail (2 min)                                                 | `[student_4_cascade/demo.mp4](student_4_cascade/demo.mp4)` *(or* `video_validator.mov`*)*                                                                                      |
-| Person 5 — Privacy redaction guardrail (2 min)                                                              | `[student_5_trace/](student_5_trace/)`                                                                                                                                         |
+| Person 5 — Privacy redaction guardrail (2 min)                                                              | `[student_5_trace/](student_5_trace/privacy_interceptor (1).mp4)`                                                                                                                                         |
 | Person 5 — Context / token manager guardrail (2 min)                                                        | `[student_6_tokens/context_manager.mp4](student_6_tokens/context_manager.mp4)`                                                                                                 |
 
 
-> Replace `PASTE_YOUR_GOOGLE_DRIVE_LINK_HERE` with the Google Drive share link (**Anyone with the link → Viewer**). The 5-minute demo is hosted on Drive because the raw recording exceeds GitHub’s 100 MB file limit.
+The 5-minute demo is hosted on Drive because the raw recording exceeds GitHub’s 100 MB file limit.
 
 ---
 
