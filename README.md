@@ -15,18 +15,22 @@ These controls are enforced through state validation, deterministic routing, per
 
 ---
 
+
+
 ## Problem and domain
 
 Legal contract review is a useful multi-agent domain because orchestration failures have clear consequences:
 
-| Failure mode | Potential consequence |
-|---|---|
-| Infinite loop | The review consumes time and tokens without producing a result |
+
+| Failure mode         | Potential consequence                                                   |
+| -------------------- | ----------------------------------------------------------------------- |
+| Infinite loop        | The review consumes time and tokens without producing a result          |
 | Silent hallucination | The system reports a clause or risk that is not present in the contract |
 | Rogue tool execution | An agent performs an unauthorized action or writes an unapproved change |
-| Cascade failure | Malformed output reaches another worker and corrupts later stages |
-| Privacy leak | Client names, contract terms, or credentials appear in telemetry |
-| Context explosion | A long review exceeds the model context window or token budget |
+| Cascade failure      | Malformed output reaches another worker and corrupts later stages       |
+| Privacy leak         | Client names, contract terms, or credentials appear in telemetry        |
+| Context explosion    | A long review exceeds the model context window or token budget          |
+
 
 The system accepts raw contract text and produces either:
 
@@ -36,6 +40,8 @@ The system accepts raw contract text and produces either:
 This project is an educational prototype. Its output is not legal advice.
 
 ---
+
+
 
 ## Architecture
 
@@ -58,6 +64,8 @@ flowchart TD
     T -. protects all graph telemetry .-> OBS["Tracing and observability"]
 ```
 
+
+
 The system is not a simple linear pipeline. Workers do not independently decide which worker runs next. They return their results to the shared state, and control returns through the Context Manager to the Coordinator.
 
 The Coordinator then decides whether to:
@@ -72,47 +80,79 @@ The Context Manager runs before each new coordination decision, keeping the stat
 
 The Redaction Interceptor is a global boundary around telemetry. It sanitizes state, metadata, inputs, outputs, and errors before tracing information can leave the graph.
 
-Detailed interfaces and routing rules are documented in [`ARCHITECTURE_DESIGN.md`](ARCHITECTURE_DESIGN.md).
+Detailed interfaces and routing rules are documented in `[ARCHITECTURE_DESIGN.md](ARCHITECTURE_DESIGN.md)`.
 
 ---
+
+
+
+## Demo videos
+
+
+| Demo                                                                                                        | Location                                                                                                                                                                       |
+| ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Team 5-minute end-to-end technical demo** (all 6 guardrails, domain + architecture + conditional routing) | [https://drive.google.com/file/d/1D0swGpI18ZsQpHVU73E_KK6NVljFgZT2/view?usp=drive_link](https://drive.google.com/file/d/1D0swGpI18ZsQpHVU73E_KK6NVljFgZT2/view?usp=drive_link) |
+| Person 1 — Infinite loop guardrail (2 min)                                                                  | `[student_1_loop/](student_1_loop/)`                                                                                                                                           |
+| Person 2 — Silent hallucination guardrail (2 min)                                                           | `[student_2_silent/demo.mp4](student_2_silent/demo.mp4)`                                                                                                                       |
+| Person 3 — Rogue tool execution guardrail (2 min)                                                           | `[student_3_rogue/person3_rogue_tool_demo.mp4](student_3_rogue/person3_rogue_tool_demo.mp4)`                                                                                   |
+| Person 4 — Downstream cascade / Validator guardrail (2 min)                                                 | `[student_4_cascade/demo.mp4](student_4_cascade/demo.mp4)` *(or* `video_validator.mov`*)*                                                                                      |
+| Person 5 — Privacy redaction guardrail (2 min)                                                              | `[student_5_trace/](student_5_trace/)`                                                                                                                                         |
+| Person 5 — Context / token manager guardrail (2 min)                                                        | `[student_6_tokens/context_manager.mp4](student_6_tokens/context_manager.mp4)`                                                                                                 |
+
+
+> Replace `PASTE_YOUR_GOOGLE_DRIVE_LINK_HERE` with the Google Drive share link (**Anyone with the link → Viewer**). The 5-minute demo is hosted on Drive because the raw recording exceeds GitHub’s 100 MB file limit.
+
+---
+
+
 
 ## Team contributions
 
 The assignment defines six technical workstreams. Our five-person team divided those workstreams as shown below, with one team member owning both global safety layers.
 
-| Team member | Assignment responsibility | Primary contributions |
-|---|---|---|
-| **Ali Sura Ozdemir** | Coordinator and integration | Designed the orchestration architecture, implemented the Coordinator loop guardrail, integrated the graph in `main_system.py`, implemented the Reporter path, and supported final integration |
-| **Mariem Guitouni** | Analyzer and shared contract | Implemented structured Analyzer output, hallucination detection, grounding validation, retry behavior, live benchmarking, the shared Pydantic contract, and README documentation |
-| **Ihina Mahajan** | Actor and tool safety | Implemented the Actor permission matrix, unauthorized-tool blocking, adversarial tests, failure reproduction, metrics, and safety-review support |
-| **Shivani Kandimalla** | Validator and cascade protection | Implemented validation and sanitization, rejection and rollback behavior, malformed-output tests, integration tests, and end-to-end testing support |
-| **Delaram Hassanlou** | Global tracing and context safety | Implemented telemetry redaction, tracing-route auditing, context-window management, bounded summaries, token benchmarks, and tests for both global guardrail layers |
+
+| Team member            | Assignment responsibility         | Primary contributions                                                                                                                                                                         |
+| ---------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ali Sura Ozdemir**   | Coordinator and integration       | Designed the orchestration architecture, implemented the Coordinator loop guardrail, integrated the graph in `main_system.py`, implemented the Reporter path, and supported final integration |
+| **Mariem Guitouni**    | Analyzer and shared contract      | Implemented structured Analyzer output, hallucination detection, grounding validation, retry behavior, live benchmarking, the shared Pydantic contract, and README documentation              |
+| **Ihina Mahajan**      | Actor and tool safety             | Implemented the Actor permission matrix, unauthorized-tool blocking, adversarial tests, failure reproduction, metrics, and safety-review support                                              |
+| **Shivani Kandimalla** | Validator and cascade protection  | Implemented validation and sanitization, rejection and rollback behavior, malformed-output tests, integration tests, and end-to-end testing support                                           |
+| **Delaram Hassanlou**  | Global tracing and context safety | Implemented telemetry redaction, tracing-route auditing, context-window management, bounded summaries, token benchmarks, and tests for both global guardrail layers                           |
+
+
+
 
 ### Workstream-to-folder mapping
 
-| Workstream | Owner | Node or layer | Folder |
-|---|---|---|---|
-| 1 | Ali Sura Ozdemir | Coordinator | [`student_1_loop/`](student_1_loop/) |
-| 2 | Mariem Guitouni | Analyzer | [`student_2_silent/`](student_2_silent/) |
-| 3 | Ihina Mahajan | Actor | [`student_3_rogue/`](student_3_rogue/) |
-| 4 | Shivani Kandimalla | Validator | [`student_4_cascade/`](student_4_cascade/) |
-| 5 | Delaram Hassanlou | Global tracing layer | [`student_5_trace/`](student_5_trace/) |
-| 6 | Delaram Hassanlou | Global context layer | [`student_6_tokens/`](student_6_tokens/) |
+
+| Workstream | Owner              | Node or layer        | Folder                                     |
+| ---------- | ------------------ | -------------------- | ------------------------------------------ |
+| 1          | Ali Sura Ozdemir   | Coordinator          | `[student_1_loop/](student_1_loop/)`       |
+| 2          | Mariem Guitouni    | Analyzer             | `[student_2_silent/](student_2_silent/)`   |
+| 3          | Ihina Mahajan      | Actor                | `[student_3_rogue/](student_3_rogue/)`     |
+| 4          | Shivani Kandimalla | Validator            | `[student_4_cascade/](student_4_cascade/)` |
+| 5          | Delaram Hassanlou  | Global tracing layer | `[student_5_trace/](student_5_trace/)`     |
+| 6          | Delaram Hassanlou  | Global context layer | `[student_6_tokens/](student_6_tokens/)`   |
+
 
 All team members contributed to contract review, integration discussions, debugging, testing, documentation review, and final submission preparation.
 
 ---
 
+
+
 ## Guardrails
 
-| # | Component | Failure addressed | Code-level protection |
-|---|---|---|---|
-| 1 | Coordinator | Infinite graph loop | Tracks `round_number` and terminates at the configured maximum |
-| 2 | Analyzer | Silent hallucination | Uses structured output, schema validation, source grounding, invariants, and one bounded retry |
-| 3 | Actor | Rogue tool execution | Applies a permission matrix and raises `InvalidToolCallException` for unauthorized actions |
-| 4 | Validator | Cascade failure | Sanitizes worker output, sets a rejection flag, records the reason, and returns control for rollback |
-| 5 | Tracing layer | Privacy leakage | Redacts sensitive information from tracing inputs, outputs, metadata, errors, and serialized state |
-| 6 | Context layer | Context explosion | Applies token thresholds, message compaction, bounded summaries, and hard context limits |
+
+| #   | Component     | Failure addressed    | Code-level protection                                                                                |
+| --- | ------------- | -------------------- | ---------------------------------------------------------------------------------------------------- |
+| 1   | Coordinator   | Infinite graph loop  | Tracks `round_number` and terminates at the configured maximum                                       |
+| 2   | Analyzer      | Silent hallucination | Uses structured output, schema validation, source grounding, invariants, and one bounded retry       |
+| 3   | Actor         | Rogue tool execution | Applies a permission matrix and raises `InvalidToolCallException` for unauthorized actions           |
+| 4   | Validator     | Cascade failure      | Sanitizes worker output, sets a rejection flag, records the reason, and returns control for rollback |
+| 5   | Tracing layer | Privacy leakage      | Redacts sensitive information from tracing inputs, outputs, metadata, errors, and serialized state   |
+| 6   | Context layer | Context explosion    | Applies token thresholds, message compaction, bounded summaries, and hard context limits             |
+
 
 Every guardrail has:
 
@@ -125,9 +165,11 @@ Every guardrail has:
 
 ---
 
+
+
 ## Shared state contract
 
-[`contract.py`](contract.py) defines the Pydantic `AgentState` shared by every graph component.
+`[contract.py](contract.py)` defines the Pydantic `AgentState` shared by every graph component.
 
 The contract specifies:
 
@@ -148,22 +190,26 @@ The contract also defines domain-level structures such as:
 - Grounding-validation rules
 - Risk and confidence constraints
 
-The contract decisions and review history are recorded in [`CONTRACT_FREEZE_NOTES.md`](CONTRACT_FREEZE_NOTES.md).
+The contract decisions and review history are recorded in `[CONTRACT_FREEZE_NOTES.md](CONTRACT_FREEZE_NOTES.md)`.
 
 ---
 
+
+
 ## Technology stack
 
-| Area | Technology |
-|---|---|
-| Language | Python 3.11 |
-| Orchestration | LangGraph |
-| Agent utilities | LangChain Core |
-| State and schemas | Pydantic v2 |
-| Local model | Ollama with `llama3.2` |
-| Testing | pytest |
-| Observability | LangSmith-compatible tracing with redaction |
-| Token estimation | Deterministic local token estimation and optional live calibration |
+
+| Area              | Technology                                                         |
+| ----------------- | ------------------------------------------------------------------ |
+| Language          | Python 3.11                                                        |
+| Orchestration     | LangGraph                                                          |
+| Agent utilities   | LangChain Core                                                     |
+| State and schemas | Pydantic v2                                                        |
+| Local model       | Ollama with `llama3.2`                                             |
+| Testing           | pytest                                                             |
+| Observability     | LangSmith-compatible tracing with redaction                        |
+| Token estimation  | Deterministic local token estimation and optional live calibration |
+
 
 The local Ollama model allows the team to run live demonstrations without sharing an external model API key.
 
@@ -171,7 +217,11 @@ Automated tests use deterministic scripted models and do not require Ollama.
 
 ---
 
+
+
 ## Setup
+
+
 
 ### 1. Create an environment
 
@@ -200,11 +250,15 @@ On Windows PowerShell:
 .venv\Scripts\Activate.ps1
 ```
 
+
+
 ### 2. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
+
+
 
 ### 3. Configure the local model
 
@@ -217,16 +271,22 @@ ollama serve
 
 Optional configuration:
 
-| Environment variable | Default |
-|---|---|
-| `OLLAMA_MODEL` | `llama3.2` |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` |
+
+| Environment variable | Default                  |
+| -------------------- | ------------------------ |
+| `OLLAMA_MODEL`       | `llama3.2`               |
+| `OLLAMA_BASE_URL`    | `http://localhost:11434` |
+
 
 Ollama is required only for live model demonstrations and benchmarks. It is not required for the deterministic test suite.
 
 ---
 
+
+
 ## Running the project
+
+
 
 ### Integrated deterministic graph
 
@@ -275,11 +335,15 @@ These scripts demonstrate the relevant behavior before and after the correspondi
 python student_6_tokens/benchmark.py
 ```
 
+
+
 ### Run live Analyzer benchmarks
 
 ```bash
 python student_2_silent/benchmark_live.py --runs 12
 ```
+
+
 
 ### Calibrate token estimates against the local model
 
@@ -291,24 +355,30 @@ The live benchmark and calibration commands require Ollama.
 
 ---
 
+
+
 ## Results summary
 
 The following measurements are taken from the repository’s failure reproductions and metric reports.
 
-| Guardrail | Before | After |
-|---|---:|---:|
-| Coordinator loop limit | Unguarded harness reached its 500-iteration safety cap | Execution stopped when the configured round limit was reached |
-| Analyzer grounding | 8 of 12 defective analyses reached Worker B (deterministic corpus); 8.3% silent failures across 12 live runs | 0 of 12 and 0% respectively |
-| Actor authorization | Unauthorized tool execution was possible | Unauthorized executions reduced to 0 |
-| Validator sanitization | 4 of 4 malformed cases reached downstream processing | 0 of 4 malformed cases reached downstream processing |
-| Telemetry redaction | Sensitive values appeared across telemetry channels | Sensitive occurrences reduced to 0 after interception |
-| Context management | Peak context estimate: 1,803 tokens; 4 of 12 cases exceeded the threshold | Peak reduced to 1,157 tokens; 0 of 12 cases exceeded the threshold |
+
+| Guardrail              | Before                                                                                                       | After                                                              |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| Coordinator loop limit | Unguarded harness reached its 500-iteration safety cap                                                       | Execution stopped when the configured round limit was reached      |
+| Analyzer grounding     | 8 of 12 defective analyses reached Worker B (deterministic corpus); 8.3% silent failures across 12 live runs | 0 of 12 and 0% respectively                                        |
+| Actor authorization    | Unauthorized tool execution was possible                                                                     | Unauthorized executions reduced to 0                               |
+| Validator sanitization | 4 of 4 malformed cases reached downstream processing                                                         | 0 of 4 malformed cases reached downstream processing               |
+| Telemetry redaction    | Sensitive values appeared across telemetry channels                                                          | Sensitive occurrences reduced to 0 after interception              |
+| Context management     | Peak context estimate: 1,803 tokens; 4 of 12 cases exceeded the threshold                                    | Peak reduced to 1,157 tokens; 0 of 12 cases exceeded the threshold |
+
 
 Additional measurements, fixtures, assumptions, and benchmark procedures are documented in the `METRICS.md` files inside the corresponding student folders.
 
 Live measurements can vary with model version, hardware, and local runtime conditions. Deterministic tests are used for reproducible correctness checks.
 
 ---
+
+
 
 ## Repository structure
 
@@ -369,17 +439,23 @@ orchestrator-legal-review/
 
 ---
 
+
+
 ## Documentation
 
-| Document | Purpose |
-|---|---|
-| [`ARCHITECTURE_DESIGN.md`](ARCHITECTURE_DESIGN.md) | Graph topology, worker responsibilities, interfaces, routing, retry, and rollback rules |
-| [`CONTRACT_FREEZE_NOTES.md`](CONTRACT_FREEZE_NOTES.md) | Shared-state review history and contract decisions |
-| [`DESIGN_DOCS.md`](DESIGN_DOCS.md) | Guardrail design decisions, alternatives, limitations, and additional risks considered |
-| [`INTERVIEW_STORIES.md`](INTERVIEW_STORIES.md) | Individual technical narratives describing the problem, implementation, and measured result |
-| Individual `METRICS.md` files | Reproduction methods and quantitative before-and-after results |
+
+| Document                                               | Purpose                                                                                     |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `[ARCHITECTURE_DESIGN.md](ARCHITECTURE_DESIGN.md)`     | Graph topology, worker responsibilities, interfaces, routing, retry, and rollback rules     |
+| `[CONTRACT_FREEZE_NOTES.md](CONTRACT_FREEZE_NOTES.md)` | Shared-state review history and contract decisions                                          |
+| `[DESIGN_DOCS.md](DESIGN_DOCS.md)`                     | Guardrail design decisions, alternatives, limitations, and additional risks considered      |
+| `[INTERVIEW_STORIES.md](INTERVIEW_STORIES.md)`         | Individual technical narratives describing the problem, implementation, and measured result |
+| Individual `METRICS.md` files                          | Reproduction methods and quantitative before-and-after results                              |
+
 
 ---
+
+
 
 ## Safety and scope
 
@@ -397,5 +473,5 @@ This repository is a controlled academic prototype.
 
 The system is designed to fail visibly and conservatively. When it cannot produce a trustworthy result, it stops or returns a partial report requiring human review.
 
-
 ---
+
